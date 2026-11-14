@@ -1,0 +1,104 @@
+name: E2E
+
+# The whole flow, for real: a brig·id server built from brig-id/server-seedling,
+# serving the interface built from brig-id/app, a passkey from a virtual
+# authenticator, and this site. It is the end-to-end test of the sign-in of
+# applications for the three repositories.
+
+on:
+  push:
+    branches: [main, "dev/*"]
+  pull_request:
+    branches: [main, "dev/*"]
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: Playwright (a site signs in through a real server)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout demo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: demo
+
+      # Both are pinned, so that a run says something about this repository
+      # and not about what moved elsewhere. Bump them together, deliberately.
+      - name: Checkout server-seedling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: brig-id/server-seedling
+          ref: 8ff0cbe29569debce037a5d91aff82ba411cca83 # feat/relying-parties @ 2026-11-14 (server-seedling#79)
+          path: server-seedling
+
+      - name: Checkout app
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: brig-id/app
+          ref: 10f9f5d9c8afce2c1f21e7eb7a4b2dc8948f019b # feat/step-1 @ 2026-11-14 (app#63)
+          path: app
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master @ 2026-08-05
+        with:
+          toolchain: stable
+
+      - name: Install system dependencies
+        run: sudo apt-get update -qq && sudo apt-get install -y mold
+
+      - name: Cache cargo
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-${{ hashFiles('server-seedling/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Build the server
+        # Playwright starts it with `cargo run`: compiled beforehand, it
+        # only has to start.
+        run: cargo build --manifest-path server-seedling/Cargo.toml
+
+      - uses: helpers4/action/setup-pnpm@6fddd178620e7325d446a246c38a44f979569fc4 # main @ 2026-07-29
+        with:
+          node-version: "24"
+          working-directory: app
+
+      - name: Build the interface
+        working-directory: app
+        run: pnpm run build
+
+      - uses: helpers4/action/setup-pnpm@6fddd178620e7325d446a246c38a44f979569fc4 # main @ 2026-07-29
+        with:
+          node-version: "24"
+          working-directory: demo
+
+      - name: Install the browser
+        working-directory: demo
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run the suite
+        working-directory: demo
+        env:
+          BRIGID_SERVER_DIR: ${{ github.workspace }}/server-seedling
+          BRIGID_APP_DIST: ${{ github.workspace }}/app/dist
+          CI: "true"
+        run: pnpm run test.e2e
+
+      - name: Upload Playwright traces on failure
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: playwright-traces
+          path: demo/test-results/
+          retention-days: 14
