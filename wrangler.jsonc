@@ -1,0 +1,30 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // The Worker's name on Cloudflare: changing it here alone would deploy a
+  // new, empty Worker. Deployed by .github/workflows/deploy.yml.
+  "name": "brigid-demo",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-11-01",
+  // Only the custom domain serves the site.
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [{ "pattern": "demo.brig.id", "custom_domain": true }],
+  // Static files are served by the platform; the Worker gets the rest.
+  "assets": {
+    "directory": "./public",
+    "not_found_handling": "none",
+  },
+  "vars": {
+    // The brig·id server this site signs in with.
+    "ISSUER": "https://helm.brig.id",
+  },
+  // Set once with `wrangler secret put`, never written here (README):
+  //   CLIENT_ID, CLIENT_SECRET   this site as registered on the server
+  //   PUBLIC_CLIENT_ID           its second registration, without a secret
+  //   SESSION_SECRET             signs this site's own cookies
+  "observability": {
+    "logs": {
+      "enabled": true,
+    },
+  },
+}
