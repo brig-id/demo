@@ -1,0 +1,7 @@
+node_modules
+public/browser.js
+.env
+.dev.vars
+.wrangler
+test-results
+playwright-report
