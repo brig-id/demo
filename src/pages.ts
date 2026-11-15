@@ -223,7 +223,7 @@ export function browser(
 </p>
 <p id="status" class="quiet small" role="status">This page needs its script.</p>
 </section>
-<div id="result" hidden>
+<div id="result" class="group" hidden>
 <section class="card" id="claims"></section>
 <section class="card">
 <h2>Two identities, two strangers</h2>

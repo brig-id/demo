@@ -120,6 +120,18 @@ test("the site meets an identity: one identifier per identity, stable, and nothi
   await chooseIdentity(page, "Personal");
   await expect(page).toHaveURL(`${DEMO}/browser/`);
   await expect(page.getByRole("status")).toContainText("To this page, you are");
+  // The cards of the result keep the page's spacing: none touches the next.
+  const cards = await page
+    .locator("main .card")
+    .evaluateAll((all) =>
+      all
+        .map((card) => card.getBoundingClientRect())
+        .map((box) => [box.top, box.bottom]),
+    );
+  expect(cards.length).toBeGreaterThan(3);
+  for (let i = 1; i < cards.length; i++) {
+    expect(cards[i]![0]! - cards[i - 1]![1]!).toBeGreaterThanOrEqual(16);
+  }
   const inBrowser = (await identifier(page).textContent())!;
   // Same person, same identity, another application: another identifier.
   expect(inBrowser).not.toBe(personal);
