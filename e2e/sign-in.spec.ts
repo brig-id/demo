@@ -27,7 +27,21 @@ async function createAccount(page: Page) {
       .click({ timeout: 2000 });
     await expect(page).toHaveURL(/\/welcome\//, { timeout: 4000 });
   }).toPass({ timeout: 30_000 });
-  await page.getByLabel("I kept my recovery code").check();
+  // The page creates the recovery code by itself. Refused for going too
+  // fast, it says so and offers a button: a person would press it, or load
+  // the page again a little later.
+  const kept = page.getByLabel("I kept my recovery code");
+  await expect(async () => {
+    if (!(await kept.isVisible())) {
+      const create = page.getByRole("button", {
+        name: "Create a recovery code",
+      });
+      if (await create.isVisible()) await create.click({ timeout: 2000 });
+      else await page.reload();
+    }
+    await expect(kept).toBeVisible({ timeout: 4000 });
+  }).toPass({ timeout: 60_000 });
+  await kept.check();
   // Continuing creates the identities the onboarding proposes. The server
   // limits how fast an account's pages may write: refused, the page says so
   // and stays, and a person would press again.
