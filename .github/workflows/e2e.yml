@@ -36,7 +36,7 @@ jobs:
         with:
           persist-credentials: false
           repository: brig-id/server-seedling
-          ref: 45f8c9fb0a711f2b080a3e8cbdfd2a280e7251fa # main @ 2026-11-15 (attributes, the life of an account, the interface in the executable)
+          ref: 0ab3327104c8abec060101f343e7848304a27448 # main @ 2026-11-15 (core pinned at its main)
           path: server-seedling
 
       - name: Checkout app
@@ -44,7 +44,7 @@ jobs:
         with:
           persist-credentials: false
           repository: brig-id/app
-          ref: 811c5feb84f365153404d56b10ae2dc29a4f3c37 # feat/attributes @ 2026-11-15 (brig-id/app#68; to move to main once it is merged)
+          ref: 78cb1e436e351a280412a6e17256b93cfbfc8def # main @ 2026-11-15 (v0.3.0)
           path: app
 
       - name: Install Rust stable
