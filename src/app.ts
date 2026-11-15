@@ -10,6 +10,8 @@ import {
   begin,
   type Claims,
   finish,
+  type Scope,
+  SCOPES,
   SignInError,
   type Transaction,
 } from "./oidc.ts";
@@ -39,6 +41,8 @@ interface Session {
   claims: Claims;
   /** The identifiers this browser presented, oldest first. */
   seen: string[];
+  /** What the last request asked for, beyond the identifier. */
+  asked?: Scope[];
 }
 
 const TRANSACTION_SECONDS = 10 * 60;
@@ -88,7 +92,9 @@ function html(
       "img-src 'self'",
       // The page that signs in from the browser calls the server directly.
       `connect-src ${issuer ?? "'none'"}`,
-      "form-action 'self'",
+      // The sign-in form is sent to this site, which sends the browser on to
+      // the server: a browser applies this rule to where a form ends up.
+      `form-action 'self'${issuer ? ` ${issuer}` : ""}`,
       "frame-ancestors 'none'",
       "base-uri 'none'",
     ].join("; "),
@@ -138,7 +144,12 @@ export async function handle(
       );
       return html(
         session
-          ? pages.signedIn(server, session.claims, session.seen)
+          ? pages.signedIn(
+              server,
+              session.claims,
+              session.seen,
+              session.asked ?? [],
+            )
           : pages.home(server),
         issuer,
       );
@@ -164,7 +175,13 @@ export async function handle(
             redirectUri: `${url.origin}/callback`,
             fetch: deps.fetch,
           },
-          { chooseIdentity: url.searchParams.has("choose") },
+          {
+            chooseIdentity: url.searchParams.has("choose"),
+            // `?ask=email&ask=profile`: what the visitor ticked.
+            scopes: SCOPES.filter((scope) =>
+              url.searchParams.getAll("ask").includes(scope),
+            ),
+          },
         );
         const headers = new Headers();
         headers.append(
@@ -229,7 +246,7 @@ export async function handle(
         ].slice(-SEEN_AT_MOST);
         headers.append(
           "set-cookie",
-          `${names.session}=${await seal({ claims, seen } satisfies Session, secret, now + SESSION_SECONDS)}; ${names.attributes}; Max-Age=${SESSION_SECONDS}`,
+          `${names.session}=${await seal({ claims, seen, asked: transaction.scopes ?? [] } satisfies Session, secret, now + SESSION_SECONDS)}; ${names.attributes}; Max-Age=${SESSION_SECONDS}`,
         );
         // The address with the code is left at once.
         return redirect("/", 303, headers);

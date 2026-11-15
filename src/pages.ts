@@ -2,7 +2,7 @@
  * The pages, as HTML text. Every value that is not written here goes through
  * `esc`: the name of a server, a claim, an error.
  */
-import type { Claims } from "./oidc.ts";
+import type { Claims, Scope } from "./oidc.ts";
 
 export function esc(value: unknown): string {
   return String(value)
@@ -70,7 +70,97 @@ const EXPLAINED: Record<string, string> = {
   nonce:
     "A random value this site sent with its request, returned to prove the answer belongs to it.",
   jti: "The serial number of this statement.",
+  email:
+    "The address on the identity you chose. You accepted to share it with this site.",
+  email_verified:
+    "Whether the server checked that the address is yours. It did not, and says so.",
+  given_name:
+    "The first name on the identity you chose. You accepted to share it with this site.",
+  preferred_username:
+    "The username on the identity you chose. You accepted to share it with this site.",
+  locale:
+    "The language on the identity you chose. You accepted to share it with this site.",
 };
+
+/**
+ * What this site may ask for, as it is registered on the server: the server
+ * decides what is required, not the request. A person can decline an
+ * optional attribute and still sign in; declining a required one ends there.
+ */
+export const ASKABLE: readonly {
+  scope: Scope;
+  claim: string;
+  label: string;
+  required: boolean;
+}[] = [
+  { scope: "email", claim: "email", label: "E-mail address", required: true },
+  {
+    scope: "profile",
+    claim: "given_name",
+    label: "First name",
+    required: false,
+  },
+  {
+    scope: "profile",
+    claim: "preferred_username",
+    label: "Username",
+    required: false,
+  },
+  { scope: "profile", claim: "locale", label: "Language", required: false },
+];
+
+const need = (required: boolean) =>
+  `<span class="tag${required ? " strong" : ""}">${required ? "required" : "optional"}</span>`;
+
+/** The choices of what to ask for: the same on the server-side page (a form
+ * sent to `/login`) and on the page that runs in the browser (read by its
+ * script). */
+export function askChoices(asked: readonly Scope[]): string {
+  const choice = (scope: Scope, title: string, about: string) => {
+    const claims = ASKABLE.filter((a) => a.scope === scope);
+    return `<label class="ask">
+<input type="checkbox" name="ask" value="${scope}"${asked.includes(scope) ? " checked" : ""}>
+<span><strong>${title}</strong> ${need(claims.every((a) => a.required))}<br>
+<span class="quiet small">${about}</span></span>
+</label>`;
+  };
+  return `<fieldset class="asks">
+<legend>Ask for more than an identifier</legend>
+${choice("email", "An e-mail address", "This site is registered as needing it. Decline it on the server&#39;s page, and you are not signed in.")}
+${choice("profile", "A first name, a username, a language", "This site works without them. Decline any of them, and you are signed in all the same.")}
+<p class="quiet small">Ticking nothing asks for the identifier alone. Whatever is asked, you decide on the server&#39;s page, value by value.</p>
+</fieldset>`;
+}
+
+/** What was asked for, next to what came back. A site cannot tell a refusal
+ * from an identity that has no such attribute, and that is on purpose. */
+export function askedTable(asked: readonly Scope[], claims: Claims): string {
+  const rows = ASKABLE.filter((a) => asked.includes(a.scope));
+  if (rows.length === 0) {
+    return `<h2>What this site asked for</h2>
+<p>The identifier, and nothing else.</p>`;
+  }
+  return `<h2>What this site asked for</h2>
+<table class="asked">
+<caption class="sr-only">Each attribute asked for, and what came back</caption>
+<tbody>
+${rows
+  .map((row) => {
+    const value = claims[row.claim];
+    return `<tr class="${value === undefined ? "absent" : "received"}">
+<th scope="row">${esc(row.label)} ${need(row.required)}</th>
+<td>${
+      value === undefined
+        ? `<strong>Not received.</strong> <span class="quiet">You declined it, or the identity you chose has none.</span>`
+        : `<strong>Received:</strong> <span class="mono">${esc(typeof value === "string" ? value : JSON.stringify(value))}</span>`
+    }</td>
+</tr>`;
+  })
+  .join("\n")}
+</tbody>
+</table>
+<p class="quiet small">A site cannot tell an attribute you declined from one your identity does not have: the server sends nothing in both cases.</p>`;
+}
 
 const TIMES = new Set(["auth_time", "iat", "exp"]);
 
@@ -131,14 +221,19 @@ ${seen
 </ol>`;
 }
 
-const NOT_RECEIVED = `<section class="card">
-<h2>What it did not receive</h2>
+/** What a site never gets, whatever it asks for. Also built in the browser. */
+export function notReceived(asked: readonly Scope[]): string {
+  return `<h2>What it did not receive</h2>
 <ul class="plain">
-<li>Your name, an e-mail address, a picture: nothing about you.</li>
+<li>${
+    asked.length === 0
+      ? "Your name, an e-mail address, a picture: nothing about you."
+      : "Anything you did not tick on the server&#39;s page, and anything this site did not ask for."
+  }</li>
 <li>The name and the icon of the identity you chose: they are yours, they stay on the server.</li>
 <li>Anything about your account, your passkeys or your other identities.</li>
-</ul>
-</section>`;
+</ul>`;
+}
 
 export function home(server: string): string {
   return layout({
@@ -148,7 +243,10 @@ export function home(server: string): string {
     body: `<section class="hero">
 <h1>A site that signs in with brig·id</h1>
 <p class="lead">This site knows nothing about you. Sign in, choose the identity it will meet, and see exactly what it receives.</p>
-<p><a class="button primary" href="/login">Sign in with brig·id</a></p>
+<form method="get" action="/login" class="sign-in">
+${askChoices([])}
+<p><button class="button primary" type="submit">Sign in with brig·id</button></p>
+</form>
 <p class="quiet small">You will be sent to <span class="mono">${esc(server)}</span>, and back.</p>
 </section>
 <section class="card">
@@ -163,6 +261,7 @@ export function signedIn(
   server: string,
   claims: Claims,
   seen: string[],
+  asked: readonly Scope[] = [],
 ): string {
   return layout({
     title: "Signed in",
@@ -170,20 +269,30 @@ export function signedIn(
     server,
     body: `<section class="hero">
 <h1>You are signed in</h1>
-<p class="lead">To this site, you are <span class="mono sub">${esc(claims.sub)}</span>. That is all it knows.</p>
-<p class="actions">
-<a class="button primary" href="/login?choose">Sign in with another identity</a>
-</p>
+<p class="lead">To this site, you are <span class="mono sub">${esc(claims.sub)}</span>. ${asked.length === 0 ? "That is all it knows." : "It knows that, and what you accepted to share."}</p>
 <form method="post" action="/logout"><button class="link" type="submit">Forget me</button></form>
+</section>
+<section class="card">
+${askedTable(asked, claims)}
 </section>
 <section class="card">
 ${claimsTable(claims)}
 </section>
 <section class="card">
+<h2>Try again</h2>
+<form method="get" action="/login" class="sign-in">
+<input type="hidden" name="choose" value="">
+${askChoices(asked)}
+<p><button class="button primary" type="submit">Sign in with another identity</button></p>
+</form>
+</section>
+<section class="card">
 <h2>Two identities, two strangers</h2>
 ${seenList(seen, claims.sub)}
 </section>
-${NOT_RECEIVED}`,
+<section class="card">
+${notReceived(asked)}
+</section>`,
   });
 }
 
@@ -218,18 +327,22 @@ export function browser(
     body: `<section class="hero">
 <h1>The same, entirely in the browser</h1>
 <p class="lead">No server of this site takes part: this page asks, receives the answer and checks it by itself. It holds no secret, because a page cannot keep one.</p>
+<div class="sign-in" id="asks">
+${askChoices([])}
+</div>
 <p class="actions" id="actions">
 <button class="button primary" id="sign-in" type="button" disabled>Sign in with brig·id</button>
 </p>
 <p id="status" class="quiet small" role="status">This page needs its script.</p>
 </section>
 <div id="result" class="group" hidden>
+<section class="card" id="asked"></section>
 <section class="card" id="claims"></section>
 <section class="card">
 <h2>Two identities, two strangers</h2>
 <div id="seen"></div>
 </section>
-${NOT_RECEIVED}
+<section class="card" id="not-received"></section>
 </div>
 <section class="card">
 <h2>For developers</h2>

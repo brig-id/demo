@@ -21,11 +21,17 @@ export interface ClientConfig {
   fetch?: typeof fetch;
 }
 
+/** The scopes that ask for attributes of the identity, beyond `openid`. */
+export type Scope = "profile" | "email";
+export const SCOPES: readonly Scope[] = ["profile", "email"];
+
 /** What is remembered between sending the person away and their return. */
 export interface Transaction {
   state: string;
   nonce: string;
   verifier: string;
+  /** What was asked for, to show next to what came back. */
+  scopes: Scope[];
 }
 
 /** What the site learns about the person. All of it. */
@@ -83,27 +89,41 @@ export async function discover(
 /**
  * Where to send the person, and what to remember until they come back.
  * `chooseIdentity` asks the server to show its choice of identities even if
- * one is remembered for this site.
+ * one is remembered for this site. `scopes` ask for attributes of the
+ * identity: the person decides, on the server's page, which ones they share.
  */
 export async function begin(
   config: ClientConfig,
-  options: { chooseIdentity?: boolean } = {},
+  options: { chooseIdentity?: boolean; scopes?: readonly Scope[] } = {},
 ): Promise<{ url: URL; transaction: Transaction }> {
   const as = await discover(config);
   if (!as.authorization_endpoint) {
     throw new SignInError("The server names no authorization endpoint.");
   }
+  const scopes = SCOPES.filter((scope) => options.scopes?.includes(scope));
+  // A server that lists its scopes and not these would ignore them: said
+  // here, instead of showing an answer that looks like a refusal.
+  const unknown = scopes.filter(
+    (scope) => as.scopes_supported && !as.scopes_supported.includes(scope),
+  );
+  if (unknown.length > 0) {
+    throw new SignInError(
+      `The server at ${new URL(config.issuer).host} gives an identifier and nothing else: it does not know the ${unknown.join(" and ")} scope.`,
+      "unsupported_scope",
+    );
+  }
   const transaction: Transaction = {
     state: oauth.generateRandomState(),
     nonce: oauth.generateRandomNonce(),
     verifier: oauth.generateRandomCodeVerifier(),
+    scopes,
   };
   const url = new URL(as.authorization_endpoint);
   url.searchParams.set("client_id", config.clientId);
   url.searchParams.set("redirect_uri", config.redirectUri);
   url.searchParams.set("response_type", "code");
-  // `openid` is all there is to ask for: the identifier.
-  url.searchParams.set("scope", "openid");
+  // `openid` alone asks for the identifier and nothing else.
+  url.searchParams.set("scope", ["openid", ...scopes].join(" "));
   url.searchParams.set("state", transaction.state);
   url.searchParams.set("nonce", transaction.nonce);
   url.searchParams.set(
@@ -169,7 +189,9 @@ export async function finish(
       throw new SignInError(
         cause.error === "access_denied"
           ? "You went back without signing in."
-          : `The server refused the request (${cause.error}).`,
+          : cause.error === "invalid_scope"
+            ? "The server refused the request: this site is not registered there to ask for that."
+            : `The server refused the request (${cause.error}).`,
         cause.error,
       );
     }

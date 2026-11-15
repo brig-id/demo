@@ -4,8 +4,15 @@
  *
  * What it remembers lives in `sessionStorage`: gone with the tab.
  */
-import { begin, type Claims, finish, type Transaction } from "./oidc.ts";
-import { claimsTable, seenList } from "./pages.ts";
+import {
+  begin,
+  type Claims,
+  finish,
+  type Scope,
+  SCOPES,
+  type Transaction,
+} from "./oidc.ts";
+import { askedTable, claimsTable, notReceived, seenList } from "./pages.ts";
 
 const TRANSACTION = "demo.transaction";
 const SEEN = "demo.seen";
@@ -30,18 +37,40 @@ function read<T>(key: string): T | null {
   }
 }
 
-function show(claims: Claims) {
+const boxes = () =>
+  [
+    ...document.querySelectorAll<HTMLInputElement>('#asks input[name="ask"]'),
+  ] as HTMLInputElement[];
+
+/** What the visitor ticked on this page. */
+function ticked(): Scope[] {
+  const values = new Set(
+    boxes()
+      .filter((box) => box.checked)
+      .map((box) => box.value),
+  );
+  return SCOPES.filter((scope) => values.has(scope));
+}
+
+function show(claims: Claims, asked: Scope[]) {
   const seen = [
     ...(read<string[]>(SEEN) ?? []).filter((s) => s !== claims.sub),
     claims.sub,
   ].slice(-6);
   sessionStorage.setItem(SEEN, JSON.stringify(seen));
-  // Both functions escape every value they are given.
+  // These functions escape every value they are given.
+  element("asked").innerHTML = askedTable(asked, claims);
   element("claims").innerHTML = claimsTable(claims);
   element("seen").innerHTML = seenList(seen, claims.sub);
+  element("not-received").innerHTML = notReceived(asked);
+  // The next request starts from the same choices.
+  for (const box of boxes()) box.checked = asked.includes(box.value as Scope);
   element("result").hidden = false;
   button.textContent = "Sign in with another identity";
-  status.textContent = `To this page, you are ${claims.sub}. That is all it knows.`;
+  status.textContent =
+    asked.length === 0
+      ? `To this page, you are ${claims.sub}. That is all it knows.`
+      : `To this page, you are ${claims.sub}. It knows that, and what you accepted to share.`;
 }
 
 async function comeBack() {
@@ -56,7 +85,10 @@ async function comeBack() {
   }
   status.textContent = "Checking the answer…";
   try {
-    show(await finish(config, returnedTo, transaction));
+    show(
+      await finish(config, returnedTo, transaction),
+      transaction.scopes ?? [],
+    );
   } catch (err) {
     status.textContent =
       err instanceof Error ? err.message : "Unexpected error.";
@@ -69,6 +101,7 @@ button.addEventListener("click", async () => {
   try {
     const { url, transaction } = await begin(config, {
       chooseIdentity: (read<string[]>(SEEN) ?? []).length > 0,
+      scopes: ticked(),
     });
     sessionStorage.setItem(TRANSACTION, JSON.stringify(transaction));
     location.assign(url);

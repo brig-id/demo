@@ -30,7 +30,12 @@ const json = (body: unknown, status = 200) =>
 
 /** A brig·id server reduced to what a site talks to. */
 async function server(
-  change: { claims?: Record<string, unknown>; signWith?: CryptoKey } = {},
+  change: {
+    claims?: Record<string, unknown>;
+    signWith?: CryptoKey;
+    /** `scopes_supported`, for a server that publishes it. */
+    scopes?: string[];
+  } = {},
 ) {
   const keys = (await crypto.subtle.generateKey("Ed25519", true, [
     "sign",
@@ -82,6 +87,7 @@ async function server(
           ],
           code_challenge_methods_supported: ["S256"],
           authorization_response_iss_parameter_supported: true,
+          ...(change.scopes ? { scopes_supported: change.scopes } : {}),
         });
       case "/.well-known/jwks.json":
         return json({
@@ -153,6 +159,97 @@ test("signing in with another identity asks the server to show its choice", asyn
   const op = await server();
   const { to } = await leave(op, "/login?choose");
   assert.equal(to.searchParams.get("prompt"), "select_account");
+});
+
+test("what the visitor ticked is what the request asks for, and nothing they did not", async () => {
+  const op = await server({ scopes: ["openid", "profile", "email"] });
+  const { to } = await leave(op, "/login?ask=email");
+  assert.equal(to.searchParams.get("scope"), "openid email");
+  const both = await leave(op, "/login?ask=email&ask=profile&choose=");
+  assert.equal(both.to.searchParams.get("scope"), "openid profile email");
+  assert.equal(both.to.searchParams.get("prompt"), "select_account");
+  // A value this site does not know asks for nothing.
+  const odd = await leave(op, "/login?ask=address&ask=openid");
+  assert.equal(odd.to.searchParams.get("scope"), "openid");
+});
+
+test("a server that gives an identifier only is not asked for more", async () => {
+  const op = await server({ scopes: ["openid"] });
+  const response = await handle(get("/login?ask=email"), env, deps(op.fetch));
+  assert.equal(response.status, 502);
+  assert.match(await response.text(), /does not know the email scope/);
+  // Asked for nothing more, it is used as before.
+  await leave(op, "/login");
+});
+
+test("the page sets what was asked next to what came back", async () => {
+  const op = await server({
+    scopes: ["openid", "profile", "email"],
+    claims: {
+      email: "ada@example.org",
+      email_verified: false,
+      given_name: "<Ada>",
+    },
+  });
+  const { to, cookie } = await leave(op, "/login?ask=email&ask=profile");
+  const back = await handle(
+    get(
+      `/callback?code=good-code&state=${to.searchParams.get("state")}&iss=${encodeURIComponent(ISSUER)}`,
+      cookie,
+    ),
+    env,
+    deps(op.fetch),
+  );
+  assert.equal(back.status, 303);
+  const html = await (
+    await handle(get("/", cookieOf(back)), env, deps(op.fetch))
+  ).text();
+  const row = (label: string) =>
+    new RegExp(`<th scope="row">${label}[^]*?</tr>`).exec(html)?.[0] ?? "";
+  assert.match(row("E-mail address"), /required/);
+  assert.match(row("E-mail address"), /Received:[^]*ada@example\.org/);
+  assert.match(row("First name"), /optional/);
+  // A value from the server is text, never markup.
+  assert.match(row("First name"), /Received:[^]*&lt;Ada&gt;/);
+  assert.match(row("Username"), /Not received/);
+  assert.match(row("Language"), /Not received/);
+  // The choices of the next request start from these.
+  assert.match(html, /name="ask" value="email" checked/);
+  assert.match(html, /name="ask" value="profile" checked/);
+});
+
+test("asked for nothing, the page says so, and offers to ask", async () => {
+  const op = await server();
+  const { to, cookie } = await leave(op);
+  const back = await handle(
+    get(
+      `/callback?code=good-code&state=${to.searchParams.get("state")}&iss=${encodeURIComponent(ISSUER)}`,
+      cookie,
+    ),
+    env,
+    deps(op.fetch),
+  );
+  const html = await (
+    await handle(get("/", cookieOf(back)), env, deps(op.fetch))
+  ).text();
+  assert.match(html, /The identifier, and nothing else\./);
+  assert.match(html, /name="ask" value="email">/);
+  assert.doesNotMatch(html, /Not received/);
+});
+
+test("a server that refuses the scope is explained", async () => {
+  const op = await server();
+  const { to, cookie } = await leave(op, "/login?ask=email");
+  const back = await handle(
+    get(
+      `/callback?error=invalid_scope&state=${to.searchParams.get("state")}&iss=${encodeURIComponent(ISSUER)}`,
+      cookie,
+    ),
+    env,
+    deps(op.fetch),
+  );
+  assert.equal(back.status, 400);
+  assert.match(await back.text(), /not registered there to ask for that/);
 });
 
 test("a good answer signs in: the page shows the identifier, and the address keeps no code", async () => {
