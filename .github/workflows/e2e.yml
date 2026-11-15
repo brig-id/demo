@@ -36,7 +36,7 @@ jobs:
         with:
           persist-credentials: false
           repository: brig-id/server-seedling
-          ref: 122200e90ad48c6b489a2a3a38dab8f73e57550f # main @ 2026-11-14 (v0.4.0)
+          ref: cba8b13ecb3109d89950beb28eed21f5cacf8d8e # main @ 2026-11-15 (v0.4.1)
           path: server-seedling
 
       - name: Checkout app
@@ -44,7 +44,7 @@ jobs:
         with:
           persist-credentials: false
           repository: brig-id/app
-          ref: 849fdd0cb9695730ab4a3a6a9818c23a69541b79 # main @ 2026-11-14
+          ref: ce67eebde86fd693df7d711d27c67e141adffb31 # main @ 2026-11-15
           path: app
 
       - name: Install Rust stable
