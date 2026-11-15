@@ -22,10 +22,16 @@ It is online at [demo.brig.id](https://demo.brig.id). It has two uses:
 | [`src/browser.ts`](src/browser.ts)     | The same entirely in the browser, with no secret (a _public client_), at `/browser/`                                                                      |
 | [`test/app.test.ts`](test/app.test.ts) | What the site refuses: an answer to another request, another server's, a token signed with another key, expired, made for someone else                    |
 
-What the site asks for is `openid` and nothing more, because there is nothing more: in v1
-a brig·id server tells an application who comes back, not who they are. The ID token's
-`sub` is different for each identity of a person and for each application; the site
-cannot connect two of them, and the suite checks it.
+By default the site asks for `openid` and nothing more, and receives an identifier: the
+ID token's `sub` is different for each identity of a person and for each application; the
+site cannot connect two of them, and the suite checks it.
+
+A visitor can make it ask for more: an e-mail address (the `email` scope), a first name, a
+username and a language (the `profile` scope). The server shows each value to the person,
+who accepts or declines them one by one. Whether an attribute is required or optional is
+not in the request: it is in the site's registration on the server. The site then shows
+what it asked for next to what came back. It cannot tell an attribute that was declined
+from one the identity does not have, and that is on purpose.
 
 ## Run it
 
@@ -33,9 +39,17 @@ It needs a brig·id server ([`server-seedling`](https://github.com/brig-id/serve
 on which it is registered, twice:
 
 ```shell
-seedling client add --name "brig·id demo" --redirect-uri http://localhost:8788/callback
-seedling client add --name "brig·id demo (browser)" --redirect-uri http://localhost:8788/browser/ --public
+seedling client add --name "brig·id demo" --redirect-uri http://localhost:8788/callback \
+  --required email --optional given_name --optional preferred_username --optional locale
+seedling client add --name "brig·id demo (browser)" --redirect-uri http://localhost:8788/browser/ --public \
+  --required email --optional given_name --optional preferred_username --optional locale
 ```
+
+The `--required` and `--optional` options say what the site may ask people to share; the
+pages describe exactly these (`ASKABLE` in [`src/pages.ts`](src/pages.ts)). For a site
+already registered, `seedling client attributes <client_id>` takes the same options.
+Registered without them, the site still signs people in, and is refused when a visitor
+makes it ask for more.
 
 Each prints a `client_id`; the first also prints a `client_secret`, once. Put them in a
 `.env` file (ignored by git):

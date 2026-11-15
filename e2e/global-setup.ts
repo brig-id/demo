@@ -39,12 +39,26 @@ function register(...args: string[]): Record<string, string> {
   );
 }
 
+/** What both registrations may ask for: the same as on the public server
+ * (`README.md`), and what `ASKABLE` in `src/pages.ts` says. */
+const MAY_ASK = [
+  "--required",
+  "email",
+  "--optional",
+  "given_name",
+  "--optional",
+  "preferred_username",
+  "--optional",
+  "locale",
+];
+
 export default async function setup() {
   const site = register(
     "--name",
     "brig·id demo",
     "--redirect-uri",
     `${DEMO}/callback`,
+    ...MAY_ASK,
   );
   const page = register(
     "--name",
@@ -52,6 +66,7 @@ export default async function setup() {
     "--redirect-uri",
     `${DEMO}/browser/`,
     "--public",
+    ...MAY_ASK,
   );
   if (!site.client_id || !site.client_secret || !page.client_id) {
     throw new Error("the server did not print the registrations");
