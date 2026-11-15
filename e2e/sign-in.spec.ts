@@ -17,7 +17,8 @@ async function virtualAuthenticator(context: BrowserContext, page: Page) {
   });
 }
 
-/** A new account on the server, with its three starting identities. */
+/** A new account on the server, with the three identities its onboarding
+ * proposes. */
 async function createAccount(page: Page) {
   await page.goto(`${SERVER}/signup/`);
   await expect(async () => {
@@ -27,7 +28,15 @@ async function createAccount(page: Page) {
     await expect(page).toHaveURL(/\/welcome\//, { timeout: 4000 });
   }).toPass({ timeout: 30_000 });
   await page.getByLabel("I kept my recovery code").check();
-  await page.getByRole("button", { name: "Continue to my identities" }).click();
+  // Continuing creates the identities the onboarding proposes. The server
+  // limits how fast an account's pages may write: refused, the page says so
+  // and stays, and a person would press again.
+  await expect(async () => {
+    await page
+      .getByRole("button", { name: "Continue to my identities" })
+      .click({ timeout: 2000 });
+    await expect(page).toHaveURL(/\/identities\/$/, { timeout: 4000 });
+  }).toPass({ timeout: 40_000 });
   await expect(page.locator(".identity-name")).toHaveText([
     "Public",
     "Personal",
