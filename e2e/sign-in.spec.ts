@@ -27,17 +27,26 @@ async function createAccount(page: Page) {
       .click({ timeout: 2000 });
     await expect(page).toHaveURL(/\/welcome\//, { timeout: 4000 });
   }).toPass({ timeout: 30_000 });
-  // The page creates the recovery code by itself. Refused for going too
-  // fast, it says so and offers a button: a person would press it, or load
-  // the page again a little later.
+  // The page creates the recovery code by itself, which takes a moment.
+  // Refused for going too fast, it says so and offers a button: a person
+  // would press it, or load the page again a little later. Loaded again once
+  // the code exists, the page no longer shows it, and offers a new one.
   const kept = page.getByLabel("I kept my recovery code");
+  const button = (name: string) => page.getByRole("button", { name });
   await expect(async () => {
-    if (!(await kept.isVisible())) {
-      const create = page.getByRole("button", {
-        name: "Create a recovery code",
-      });
-      if (await create.isVisible()) await create.click({ timeout: 2000 });
-      else await page.reload();
+    try {
+      await expect(kept).toBeVisible({ timeout: 5000 });
+      return;
+    } catch {
+      // Not there yet: do what the page offers.
+    }
+    if (await button("Create a recovery code").isVisible()) {
+      await button("Create a recovery code").click({ timeout: 2000 });
+    } else if (await button("Create a new code").isVisible()) {
+      await button("Create a new code").click({ timeout: 2000 });
+      await button("Replace it").click({ timeout: 2000 });
+    } else {
+      await page.reload();
     }
     await expect(kept).toBeVisible({ timeout: 4000 });
   }).toPass({ timeout: 60_000 });
