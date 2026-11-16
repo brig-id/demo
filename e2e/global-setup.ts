@@ -1,15 +1,18 @@
 /**
- * Once the server runs: registers this site on it, twice (with a secret for
- * the server-side flow, without for the page that runs in the browser), the
- * way an administrator does, then starts the site with what was printed.
+ * Once the server runs: opens it to new accounts (a new server takes them by
+ * invitation, and the suite creates its own), registers this site on it,
+ * twice (with a secret for the server-side flow, without for the page that
+ * runs in the browser), the way its operator does on the machine, then starts
+ * the site with what was printed.
  */
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { DEMO, MASTER_KEY, SERVER, SERVER_DIR } from "../playwright.config.ts";
 import { serve } from "../src/node.ts";
 
-function register(...args: string[]): Record<string, string> {
-  const out = execFileSync(
+/** `seedling …` on the database of the running server. */
+function seedling(...args: string[]): string {
+  return execFileSync(
     "cargo",
     [
       "run",
@@ -17,8 +20,6 @@ function register(...args: string[]): Record<string, string> {
       "--manifest-path",
       path.join(SERVER_DIR, "Cargo.toml"),
       "--",
-      "client",
-      "add",
       ...args,
     ],
     {
@@ -30,6 +31,10 @@ function register(...args: string[]): Record<string, string> {
       },
     },
   );
+}
+
+function register(...args: string[]): Record<string, string> {
+  const out = seedling("client", "add", ...args);
   // `client_id=…` and, once, `client_secret=…`.
   return Object.fromEntries(
     out
@@ -53,6 +58,7 @@ const MAY_ASK = [
 ];
 
 export default async function setup() {
+  seedling("signup", "open");
   const site = register(
     "--name",
     "brig·id demo",
