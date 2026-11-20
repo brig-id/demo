@@ -565,6 +565,7 @@ test("a server is named by its domain", () => {
   assert.equal(issuerFrom("helm.brig.id"), "https://helm.brig.id");
   assert.equal(issuerFrom(" https://helm.brig.id/ "), "https://helm.brig.id");
   assert.equal(issuerFrom("http://localhost:8080"), "http://localhost:8080");
+  assert.equal(issuerFrom("localhost:8080"), "http://localhost:8080");
   for (const bad of [
     "",
     "http://helm.brig.id",
