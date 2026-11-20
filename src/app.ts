@@ -7,9 +7,17 @@
  * writes signed cookies in their browser.
  */
 import {
+  BROWSER_DOCUMENT,
+  browserDocument,
+  loadClientKey,
+  SERVER_DOCUMENT,
+  serverDocument,
+} from "./client.ts";
+import {
   begin,
   type Claims,
   finish,
+  issuerFrom,
   type Scope,
   SCOPES,
   SignInError,
@@ -19,16 +27,21 @@ import * as pages from "./pages.ts";
 import { seal, unseal } from "./seal.ts";
 
 export interface Env {
-  /** The brig·id server this site signs in with. */
+  /** The brig·id server offered first; a visitor can name another. */
   ISSUER?: string;
-  /** This site as registered there, with a secret… */
-  CLIENT_ID?: string;
-  CLIENT_SECRET?: string;
-  /** …and a second registration without one, for the page that runs in the
-   * browser. */
-  PUBLIC_CLIENT_ID?: string;
+  /** The site's private key (a P-256 JWK): it signs to prove who the site
+   * is; its public half is in the document the site publishes. */
+  CLIENT_KEY?: string;
   /** Signs this site's own cookies. */
   SESSION_SECRET?: string;
+  /**
+   * Only for a server on this machine, during development: a server reads
+   * documents over https only, so there the site is registered by its
+   * operator (`seedling client add`), twice. These replace the documents.
+   */
+  CLIENT_ID?: string;
+  CLIENT_SECRET?: string;
+  PUBLIC_CLIENT_ID?: string;
 }
 
 export interface Deps {
@@ -78,6 +91,9 @@ function html(
   status = 200,
   headers = new Headers(),
 ) {
+  // A visitor may sign in with any server: the browser page calls it, and
+  // the sign-in form ends up there. Plain http only for a local server.
+  const servers = `https:${issuer?.startsWith("http:") ? ` ${issuer}` : ""}`;
   headers.set("content-type", "text/html; charset=utf-8");
   headers.set("cache-control", "no-store");
   headers.set("referrer-policy", "no-referrer");
@@ -91,15 +107,26 @@ function html(
       "font-src 'self'",
       "img-src 'self'",
       // The page that signs in from the browser calls the server directly.
-      `connect-src ${issuer ?? "'none'"}`,
+      `connect-src ${servers}`,
       // The sign-in form is sent to this site, which sends the browser on to
       // the server: a browser applies this rule to where a form ends up.
-      `form-action 'self'${issuer ? ` ${issuer}` : ""}`,
+      `form-action 'self' ${servers}`,
       "frame-ancestors 'none'",
       "base-uri 'none'",
     ].join("; "),
   );
   return new Response(body, { status, headers });
+}
+
+/** A document servers read: public, cacheable for an hour. */
+function document(body: unknown) {
+  return new Response(JSON.stringify(body, null, 2), {
+    headers: {
+      "content-type": "application/json",
+      "cache-control": "public, max-age=3600",
+      "x-content-type-options": "nosniff",
+    },
+  });
 }
 
 function redirect(to: string, status: 302 | 303, headers = new Headers()) {
@@ -118,8 +145,11 @@ export async function handle(
   const names = cookieNames(url);
   const jar = cookies(request);
 
-  const issuer = env.ISSUER ? new URL(env.ISSUER).origin : null;
+  // The server offered first. A visitor names another in the form.
+  const issuer = env.ISSUER ? issuerFrom(env.ISSUER) : null;
   const server = issuer ? new URL(issuer).host : "no server yet";
+  // Described by its own document; or registered, for a local server.
+  const clientId = env.CLIENT_ID ?? `${url.origin}${SERVER_DOCUMENT}`;
   const secret = env.SESSION_SECRET ?? "";
   const expire = (name: string) => `${name}=; ${names.attributes}; Max-Age=0`;
 
@@ -136,6 +166,15 @@ export async function handle(
   }
 
   switch (url.pathname) {
+    // The documents every server reads: this site's registration, published.
+    case SERVER_DOCUMENT: {
+      const key = await loadClientKey(env.CLIENT_KEY);
+      if (!key) return new Response("Not configured\n", { status: 503 });
+      return document(serverDocument(url.origin, key));
+    }
+    case BROWSER_DOCUMENT:
+      return document(browserDocument(url.origin));
+
     case "/": {
       const session = await unseal<Session>(
         jar.get(names.session),
@@ -145,7 +184,7 @@ export async function handle(
       return html(
         session
           ? pages.signedIn(
-              server,
+              new URL(session.claims.iss).host,
               session.claims,
               session.seen,
               session.asked ?? [],
@@ -156,22 +195,40 @@ export async function handle(
     }
 
     case "/login": {
-      if (!issuer || !env.CLIENT_ID || !env.CLIENT_SECRET || !secret) {
+      const key = await loadClientKey(env.CLIENT_KEY);
+      const proof = env.CLIENT_ID ? env.CLIENT_SECRET : key;
+      if (!proof || !secret) {
         return html(
           pages.failed(
             server,
-            "This demonstration is not connected to a brig·id server yet.",
-            "The site is online, its registration on the server is not done.",
+            "This demonstration is not set up yet.",
+            "The site is online; its key or its cookie secret is missing.",
           ),
           issuer,
           503,
         );
       }
+      // The server the visitor named, or the one offered.
+      const named = url.searchParams.get("server");
+      const chosen = named ? issuerFrom(named) : issuer;
+      if (!chosen) {
+        return html(
+          pages.failed(
+            server,
+            named
+              ? `“${named}” is not the address of a server.`
+              : "This demonstration offers no server.",
+            "A server is named by its domain, like helm.brig.id.",
+          ),
+          issuer,
+          400,
+        );
+      }
       try {
         const { url: to, transaction } = await begin(
           {
-            issuer,
-            clientId: env.CLIENT_ID,
+            issuer: chosen,
+            clientId,
             redirectUri: `${url.origin}/callback`,
             fetch: deps.fetch,
           },
@@ -211,7 +268,9 @@ export async function handle(
         secret,
         now,
       );
-      if (!issuer || !env.CLIENT_ID || !env.CLIENT_SECRET || !transaction) {
+      const key = await loadClientKey(env.CLIENT_KEY);
+      const proof = env.CLIENT_ID ? env.CLIENT_SECRET : key;
+      if (!proof || !transaction) {
         return html(
           pages.failed(
             server,
@@ -224,11 +283,14 @@ export async function handle(
         );
       }
       try {
+        // The answer must come from the server this request went to.
         const claims = await finish(
           {
-            issuer,
-            clientId: env.CLIENT_ID,
-            clientSecret: env.CLIENT_SECRET,
+            issuer: transaction.issuer,
+            clientId,
+            ...(env.CLIENT_ID
+              ? { clientSecret: env.CLIENT_SECRET }
+              : key && { clientKey: { key: key.key, kid: key.kid } }),
             redirectUri: `${url.origin}/callback`,
             fetch: deps.fetch,
           },
@@ -270,7 +332,8 @@ export async function handle(
       return html(
         pages.browser(server, {
           issuer: issuer ?? "",
-          "client-id": env.PUBLIC_CLIENT_ID ?? "",
+          "client-id":
+            env.PUBLIC_CLIENT_ID ?? `${url.origin}${BROWSER_DOCUMENT}`,
         }),
         issuer,
       );

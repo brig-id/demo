@@ -9,16 +9,57 @@
 import * as oauth from "oauth4webapi";
 
 export interface ClientConfig {
-  /** The brig·id server, e.g. `https://id.example.org`. */
+  /** The person's brig·id server, e.g. `https://id.example.org`. */
   issuer: string;
-  /** Given by the server's administrator when the site was registered. */
+  /**
+   * The address of the document that describes this site
+   * (`https://demo.brig.id/oauth-client-metadata.json`): every server reads
+   * it there, so the site is registered nowhere.
+   */
   clientId: string;
-  /** Where the server sends the person back; registered with the site. */
+  /** Where the server sends the person back; listed in that document. */
   redirectUri: string;
-  /** Only for a site that can keep one: never sent to a browser. */
+  /**
+   * Only for a site with a server: the private key whose public half the
+   * document publishes. The site proves who it is by signing with it
+   * (`private_key_jwt`); there is no secret shared with any server. Never
+   * sent to a browser.
+   */
+  clientKey?: { key: CryptoKey; kid: string };
+  /**
+   * Instead, for a site registered on a server by its operator (a server on
+   * this machine, during development: it cannot read a document over http).
+   * Never sent to a browser.
+   */
   clientSecret?: string;
   /** For tests. */
   fetch?: typeof fetch;
+}
+
+/**
+ * The server a person names, as an issuer: `id.example.org`,
+ * `https://id.example.org/` → `https://id.example.org`. `null` for anything
+ * else. Plain http is accepted for this machine only, during development.
+ */
+export function issuerFrom(input: string): string | null {
+  const text = input.trim();
+  if (!text || /\s/.test(text)) return null;
+  let url: URL;
+  try {
+    url = new URL(
+      /^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? text : `https://${text}`,
+    );
+  } catch {
+    return null;
+  }
+  const local = url.hostname === "localhost" || url.hostname === "127.0.0.1";
+  const scheme =
+    url.protocol === "https:" || (url.protocol === "http:" && local);
+  if (!scheme || url.username || url.password || url.search || url.hash)
+    return null;
+  if (url.pathname !== "/") return null;
+  if (!local && !url.hostname.includes(".")) return null;
+  return url.origin;
 }
 
 /** The scopes that ask for attributes of the identity, beyond `openid`. */
@@ -27,6 +68,8 @@ export const SCOPES: readonly Scope[] = ["profile", "email"];
 
 /** What is remembered between sending the person away and their return. */
 export interface Transaction {
+  /** The server the person named: the answer must come from it. */
+  issuer: string;
   state: string;
   nonce: string;
   verifier: string;
@@ -113,6 +156,7 @@ export async function begin(
     );
   }
   const transaction: Transaction = {
+    issuer: config.issuer,
     state: oauth.generateRandomState(),
     nonce: oauth.generateRandomNonce(),
     verifier: oauth.generateRandomCodeVerifier(),
@@ -147,9 +191,11 @@ export async function finish(
 ): Promise<Claims> {
   const as = await discover(config);
   const client: oauth.Client = { client_id: config.clientId };
-  const authentication = config.clientSecret
-    ? oauth.ClientSecretBasic(config.clientSecret)
-    : oauth.None();
+  const authentication = config.clientKey
+    ? oauth.PrivateKeyJwt(config.clientKey)
+    : config.clientSecret
+      ? oauth.ClientSecretBasic(config.clientSecret)
+      : oauth.None();
   try {
     const params = oauth.validateAuthResponse(
       as,
@@ -190,7 +236,7 @@ export async function finish(
         cause.error === "access_denied"
           ? "You went back without signing in."
           : cause.error === "invalid_scope"
-            ? "The server refused the request: this site is not registered there to ask for that."
+            ? "The server refused the request: this site may not ask it for that."
             : `The server refused the request (${cause.error}).`,
         cause.error,
       );

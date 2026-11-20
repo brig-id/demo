@@ -6,16 +6,28 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { type Env, handle } from "../src/app.ts";
+import { issuerFrom } from "../src/oidc.ts";
 
 const ISSUER = "https://id.example.org";
 const SITE = "https://demo.example.org";
 const NOW = 1_800_000_000;
 
+const CLIENT_ID = `${SITE}/oauth-client-metadata.json`;
+
+/** The site's key, as `CLIENT_KEY` holds it: a private P-256 JWK. */
+const siteKeys = (await crypto.subtle.generateKey(
+  { name: "ECDSA", namedCurve: "P-256" },
+  true,
+  ["sign", "verify"],
+)) as CryptoKeyPair;
+const privateJwk = {
+  ...(await crypto.subtle.exportKey("jwk", siteKeys.privateKey)),
+  kid: "demo-1",
+};
+
 const env: Env = {
   ISSUER,
-  CLIENT_ID: "site",
-  CLIENT_SECRET: "s3cret",
-  PUBLIC_CLIENT_ID: "page",
+  CLIENT_KEY: JSON.stringify(privateJwk),
   SESSION_SECRET: "a-secret-for-the-cookies-of-the-tests",
 };
 
@@ -42,15 +54,20 @@ async function server(
     "verify",
   ])) as CryptoKeyPair;
   const jwk = await crypto.subtle.exportKey("jwk", keys.publicKey);
-  const seen: { verifier?: string; authorization?: string; nonce?: string } =
-    {};
+  const seen: {
+    verifier?: string;
+    authorization?: string;
+    assertion?: string;
+    assertionType?: string;
+    nonce?: string;
+  } = {};
 
   const idToken = async (nonce: string) => {
     const header = b64(JSON.stringify({ alg: "EdDSA", kid: "k1", typ: "JWT" }));
     const payload = b64(
       JSON.stringify({
         iss: ISSUER,
-        aud: "site",
+        aud: CLIENT_ID,
         sub: "vsid-of-this-identity-for-this-site",
         iat: NOW,
         exp: NOW + 300,
@@ -81,10 +98,8 @@ async function server(
           response_types_supported: ["code"],
           subject_types_supported: ["pairwise"],
           id_token_signing_alg_values_supported: ["EdDSA"],
-          token_endpoint_auth_methods_supported: [
-            "client_secret_basic",
-            "none",
-          ],
+          token_endpoint_auth_methods_supported: ["private_key_jwt", "none"],
+          client_id_metadata_document_supported: true,
           code_challenge_methods_supported: ["S256"],
           authorization_response_iss_parameter_supported: true,
           ...(change.scopes ? { scopes_supported: change.scopes } : {}),
@@ -97,6 +112,8 @@ async function server(
         const form = new URLSearchParams(await request.text());
         seen.verifier = form.get("code_verifier") ?? undefined;
         seen.authorization = request.headers.get("authorization") ?? undefined;
+        seen.assertion = form.get("client_assertion") ?? undefined;
+        seen.assertionType = form.get("client_assertion_type") ?? undefined;
         if (form.get("code") !== "good-code")
           return json({ error: "invalid_grant" }, 400);
         return json({
@@ -139,7 +156,7 @@ test("the request asks for a code, with PKCE, a state and a nonce, and nothing b
   assert.equal(to.origin + to.pathname, `${ISSUER}/authorize`);
   assert.equal(to.searchParams.get("response_type"), "code");
   assert.equal(to.searchParams.get("scope"), "openid");
-  assert.equal(to.searchParams.get("client_id"), "site");
+  assert.equal(to.searchParams.get("client_id"), CLIENT_ID);
   assert.equal(to.searchParams.get("redirect_uri"), `${SITE}/callback`);
   assert.equal(to.searchParams.get("code_challenge_method"), "S256");
   assert.match(to.searchParams.get("code_challenge")!, /^[A-Za-z0-9_-]{43}$/);
@@ -249,7 +266,7 @@ test("a server that refuses the scope is explained", async () => {
     deps(op.fetch),
   );
   assert.equal(back.status, 400);
-  assert.match(await back.text(), /not registered there to ask for that/);
+  assert.match(await back.text(), /may not ask it for that/);
 });
 
 test("a good answer signs in: the page shows the identifier, and the address keeps no code", async () => {
@@ -266,8 +283,31 @@ test("a good answer signs in: the page shows the identifier, and the address kee
   );
   assert.equal(back.status, 303);
   assert.equal(back.headers.get("location"), "/");
-  // The site authenticated itself, and proved it made the request.
-  assert.match(op.seen.authorization!, /^Basic /);
+  // The site proved who it is with a signature of its key, and proved it
+  // made the request (PKCE). No secret, no Basic header.
+  assert.equal(op.seen.authorization, undefined);
+  assert.equal(
+    op.seen.assertionType,
+    "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+  );
+  const [h, p, sig] = op.seen.assertion!.split(".");
+  const header = JSON.parse(Buffer.from(h!, "base64url").toString());
+  const claims = JSON.parse(Buffer.from(p!, "base64url").toString());
+  assert.equal(header.alg, "ES256");
+  assert.equal(header.kid, "demo-1");
+  assert.equal(claims.iss, CLIENT_ID);
+  assert.equal(claims.sub, CLIENT_ID);
+  assert.equal(claims.aud, ISSUER);
+  assert.ok(claims.jti);
+  assert.ok(
+    await crypto.subtle.verify(
+      { name: "ECDSA", hash: "SHA-256" },
+      siteKeys.publicKey,
+      Buffer.from(sig!, "base64url"),
+      new TextEncoder().encode(`${h}.${p}`),
+    ),
+    "signed by the key the document publishes",
+  );
   assert.match(op.seen.verifier!, /^[A-Za-z0-9_-]{43,}$/);
 
   const page = await handle(get("/", cookieOf(back)), env, deps(op.fetch));
@@ -433,18 +473,110 @@ test("forgetting clears the cookie", async () => {
   );
 });
 
-test("a site not registered yet says so instead of failing", async () => {
+test("a site without its key says so instead of failing", async () => {
   const response = await handle(get("/login"), { ISSUER }, {});
   assert.equal(response.status, 503);
-  assert.match(await response.text(), /not connected to a brig·id server yet/);
+  assert.match(await response.text(), /not set up yet/);
 });
 
-test("the page for the browser carries the public client, never the secret", async () => {
+test("the page for the browser carries its own document, never the key", async () => {
   const html = await (await handle(get("/browser/"), env)).text();
-  assert.match(html, /data-client-id="page"/);
+  assert.match(
+    html,
+    /data-client-id="https:\/\/demo.example.org\/browser\/oauth-client-metadata.json"/,
+  );
   assert.match(html, /data-issuer="https:\/\/id.example.org"/);
-  assert.equal(html.includes("s3cret"), false);
-  assert.equal(html.includes('"site"'), false);
+  assert.equal(html.includes(privateJwk.d!), false);
+});
+
+test("the site describes itself: its public key, never the private one", async () => {
+  const response = await handle(get("/oauth-client-metadata.json"), env);
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("content-type")!, /application\/json/);
+  const text = await response.text();
+  assert.equal(text.includes(privateJwk.d!), false);
+  const document = JSON.parse(text);
+  assert.equal(document.client_id, CLIENT_ID);
+  assert.deepEqual(document.redirect_uris, [`${SITE}/callback`]);
+  assert.equal(document.token_endpoint_auth_method, "private_key_jwt");
+  assert.equal(document.jwks.keys.length, 1);
+  assert.equal(document.jwks.keys[0].kid, "demo-1");
+  assert.equal(document.jwks.keys[0].x, privateJwk.x);
+  assert.equal(document.brigid_attributes.email, "required");
+
+  const page = JSON.parse(
+    await (
+      await handle(get("/browser/oauth-client-metadata.json"), env)
+    ).text(),
+  );
+  assert.equal(page.client_id, `${SITE}/browser/oauth-client-metadata.json`);
+  assert.deepEqual(page.redirect_uris, [`${SITE}/browser/`]);
+  assert.equal(page.token_endpoint_auth_method, "none");
+  assert.equal(page.jwks, undefined);
+
+  const missing = await handle(get("/oauth-client-metadata.json"), { ISSUER });
+  assert.equal(missing.status, 503);
+});
+
+test("the visitor names their server", async () => {
+  const op = await server();
+  const { to } = await leave(op, "/login?server=id.example.org");
+  assert.equal(to.origin, ISSUER);
+  const refused = await handle(
+    get("/login?server=not%20a%20server"),
+    env,
+    deps(op.fetch),
+  );
+  assert.equal(refused.status, 400);
+  assert.match(await refused.text(), /not the address of a server/);
+});
+
+test("registered on a local server, the site uses its secret instead", async () => {
+  const op = await server({ claims: { aud: "site" } });
+  const registered: Env = {
+    ISSUER,
+    CLIENT_ID: "site",
+    CLIENT_SECRET: "s3cret",
+    PUBLIC_CLIENT_ID: "page",
+    SESSION_SECRET: env.SESSION_SECRET,
+  };
+  const response = await handle(get("/login"), registered, deps(op.fetch));
+  assert.equal(response.status, 302);
+  const to = new URL(response.headers.get("location")!);
+  op.seen.nonce = to.searchParams.get("nonce") ?? undefined;
+  assert.equal(to.searchParams.get("client_id"), "site");
+  const back = await handle(
+    get(
+      `/callback?code=good-code&state=${to.searchParams.get("state")}&iss=${encodeURIComponent(ISSUER)}`,
+      cookieOf(response),
+    ),
+    registered,
+    deps(op.fetch),
+  );
+  assert.equal(back.status, 303);
+  assert.match(op.seen.authorization!, /^Basic /);
+  assert.equal(op.seen.assertion, undefined);
+  const page = await (await handle(get("/browser/"), registered)).text();
+  assert.match(page, /data-client-id="page"/);
+  assert.equal(page.includes("s3cret"), false);
+});
+
+test("a server is named by its domain", () => {
+  assert.equal(issuerFrom("helm.brig.id"), "https://helm.brig.id");
+  assert.equal(issuerFrom(" https://helm.brig.id/ "), "https://helm.brig.id");
+  assert.equal(issuerFrom("http://localhost:8080"), "http://localhost:8080");
+  for (const bad of [
+    "",
+    "http://helm.brig.id",
+    "helm",
+    "https://helm.brig.id/path",
+    "https://u:p@helm.brig.id",
+    "https://helm.brig.id?x=1",
+    "javascript:alert(1)",
+    "helm brig.id",
+  ]) {
+    assert.equal(issuerFrom(bad), null, bad);
+  }
 });
 
 test("values are escaped wherever they are shown", async () => {
