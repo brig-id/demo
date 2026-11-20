@@ -46,8 +46,12 @@ export function issuerFrom(input: string): string | null {
   if (!text || /\s/.test(text)) return null;
   let url: URL;
   try {
+    // No scheme: https, except for this machine, where a development
+    // server answers over plain http.
+    const bare = !/^[a-z][a-z0-9+.-]*:\/\//i.test(text);
+    const onThisMachine = /^(localhost|127\.0\.0\.1)(:\d+)?\/?$/.test(text);
     url = new URL(
-      /^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? text : `https://${text}`,
+      bare ? `${onThisMachine ? "http" : "https"}://${text}` : text,
     );
   } catch {
     return null;
