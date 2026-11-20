@@ -15,6 +15,12 @@ export function esc(value: unknown): string {
 
 const SOURCE = "https://github.com/brig-id/demo";
 
+/** The field where the visitor names their server. */
+function serverField(server: string): string {
+  return `<p class="server-field"><label for="server">Your brig·id server</label>
+<input id="server" name="server" value="${esc(server)}" required autocomplete="url" inputmode="url" spellcheck="false" autocapitalize="off"></p>`;
+}
+
 function layout(options: {
   title: string;
   current: "server" | "browser";
@@ -62,7 +68,7 @@ ${options.body}
 
 const EXPLAINED: Record<string, string> = {
   sub: "The identifier. Made for this site and the identity you chose: another site, or another of your identities here, gets a different one, and nothing connects them.",
-  iss: "Who says so: the server you signed in with.",
+  iss: "Who says so: the server you signed in with. A site knows you by this and the identifier together, never by the identifier alone: another server cannot speak for you.",
   aud: "Who it is said to: this site, and no other.",
   auth_time: "When you last used your passkey with that server.",
   iat: "When this statement was written.",
@@ -83,8 +89,8 @@ const EXPLAINED: Record<string, string> = {
 };
 
 /**
- * What this site may ask for, as it is registered on the server: the server
- * decides what is required, not the request. A person can decline an
+ * What this site may ask for, as its document declares it (`ATTRIBUTES` in
+ * `client.ts`): what is required is fixed there, not in the request. A person can decline an
  * optional attribute and still sign in; declining a required one ends there.
  */
 export const ASKABLE: readonly {
@@ -126,7 +132,7 @@ export function askChoices(asked: readonly Scope[]): string {
   };
   return `<fieldset class="asks">
 <legend>Ask for more than an identifier</legend>
-${choice("email", "An e-mail address", "This site is registered as needing it. Decline it on the server&#39;s page, and you are not signed in.")}
+${choice("email", "An e-mail address", "This site declares that it needs it. Decline it on the server&#39;s page, and you are not signed in.")}
 ${choice("profile", "A first name, a username, a language", "This site works without them. Decline any of them, and you are signed in all the same.")}
 <p class="quiet small">Ticking nothing asks for the identifier alone. Whatever is asked, you decide on the server&#39;s page, value by value.</p>
 </fieldset>`;
@@ -244,15 +250,17 @@ export function home(server: string): string {
 <h1>A site that signs in with brig·id</h1>
 <p class="lead">This site knows nothing about you. Sign in, choose the identity it will meet, and see exactly what it receives.</p>
 <form method="get" action="/login" class="sign-in">
+${serverField(server)}
 ${askChoices([])}
 <p><button class="button primary" type="submit">Sign in with brig·id</button></p>
 </form>
-<p class="quiet small">You will be sent to <span class="mono">${esc(server)}</span>, and back.</p>
+<p class="quiet small">You will be sent to your server, and back.</p>
 </section>
 <section class="card">
 <h2>For developers</h2>
 <p>This is an ordinary OpenID Connect client: the Authorization Code flow with PKCE, done with a standard library. Nothing in it is specific to brig·id, and <a href="${SOURCE}">its source</a> is short enough to read.</p>
-<p>This page is the classic case: a site with a server, which keeps a secret. <a href="/browser/">The other page</a> does the same entirely in the browser, with no secret.</p>
+<p>It is registered on no server. It publishes <a href="/oauth-client-metadata.json">a document that describes it</a>, and the address of that document is its <code>client_id</code>: any brig·id server reads it there. It proves who it is by signing with a key whose public half the document carries; no secret is shared with any server.</p>
+<p>This page is the classic case: a site with a server. <a href="/browser/">The other page</a> does the same entirely in the browser, with no key.</p>
 </section>`,
   });
 }
@@ -282,6 +290,7 @@ ${claimsTable(claims)}
 <h2>Try again</h2>
 <form method="get" action="/login" class="sign-in">
 <input type="hidden" name="choose" value="">
+${serverField(server)}
 ${askChoices(asked)}
 <p><button class="button primary" type="submit">Sign in with another identity</button></p>
 </form>
@@ -328,6 +337,7 @@ export function browser(
 <h1>The same, entirely in the browser</h1>
 <p class="lead">No server of this site takes part: this page asks, receives the answer and checks it by itself. It holds no secret, because a page cannot keep one.</p>
 <div class="sign-in" id="asks">
+${serverField(server)}
 ${askChoices([])}
 </div>
 <p class="actions" id="actions">
@@ -346,7 +356,7 @@ ${askChoices([])}
 </div>
 <section class="card">
 <h2>For developers</h2>
-<p>A <em>public client</em>: registered on the server without a secret. What protects the exchange is PKCE: the page that asked is the only one that can redeem the answer. The server's token endpoint and keys can be read from any origin; they depend on no cookie.</p>
+<p>A <em>public client</em>: <a href="/browser/oauth-client-metadata.json">its document</a> declares no key, because a page cannot keep one. What protects the exchange is PKCE: the page that asked is the only one that can redeem the answer. The server's token endpoint and keys can be read from any origin; they depend on no cookie.</p>
 </section>`,
   });
 }

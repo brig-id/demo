@@ -8,6 +8,7 @@ import {
   begin,
   type Claims,
   finish,
+  issuerFrom,
   type Scope,
   SCOPES,
   type Transaction,
@@ -22,12 +23,14 @@ const element = <T extends HTMLElement>(id: string) =>
 const button = element<HTMLButtonElement>("sign-in");
 const status = element<HTMLParagraphElement>("status");
 
-const { issuer = "", clientId = "" } = document.body.dataset;
-const config = {
-  issuer,
+const { clientId = "" } = document.body.dataset;
+const serverField = element<HTMLInputElement>("server");
+/** The page's document (its `client_id`), and the server of a sign-in. */
+const config = (server: string) => ({
+  issuer: server,
   clientId,
   redirectUri: `${location.origin}/browser/`,
-};
+});
 
 function read<T>(key: string): T | null {
   try {
@@ -86,7 +89,8 @@ async function comeBack() {
   status.textContent = "Checking the answer…";
   try {
     show(
-      await finish(config, returnedTo, transaction),
+      // The answer must come from the server this request went to.
+      await finish(config(transaction.issuer), returnedTo, transaction),
       transaction.scopes ?? [],
     );
   } catch (err) {
@@ -96,10 +100,15 @@ async function comeBack() {
 }
 
 button.addEventListener("click", async () => {
+  const server = issuerFrom(serverField.value);
+  if (!server) {
+    status.textContent = `“${serverField.value}” is not the address of a server: a domain, like helm.brig.id.`;
+    return;
+  }
   button.disabled = true;
-  status.textContent = "Asking the server…";
+  status.textContent = `Asking ${new URL(server).host}…`;
   try {
-    const { url, transaction } = await begin(config, {
+    const { url, transaction } = await begin(config(server), {
       chooseIdentity: (read<string[]>(SEEN) ?? []).length > 0,
       scopes: ticked(),
     });
@@ -112,12 +121,12 @@ button.addEventListener("click", async () => {
   }
 });
 
-if (!issuer || !clientId) {
+if (!clientId) {
   status.textContent =
     "This demonstration is not connected to a brig·id server yet.";
 } else {
   button.disabled = false;
-  status.textContent = `You will be sent to ${new URL(issuer).host}, and back.`;
+  status.textContent = "You will be sent to your server, and back.";
   const params = new URLSearchParams(location.search);
   if (params.has("code") || params.has("error")) void comeBack();
 }

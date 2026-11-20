@@ -15,13 +15,15 @@
     "not_found_handling": "none",
   },
   "vars": {
-    // The brig·id server this site signs in with.
+    // The brig·id server offered first; a visitor can name another.
     "ISSUER": "https://helm.brig.id",
   },
   // Set once with `wrangler secret put`, never written here (README):
-  //   CLIENT_ID, CLIENT_SECRET   this site as registered on the server
-  //   PUBLIC_CLIENT_ID           its second registration, without a secret
-  //   SESSION_SECRET             signs this site's own cookies
+  //   CLIENT_KEY       the site's private key (P-256 JWK); its public half is
+  //                    in /oauth-client-metadata.json
+  //   SESSION_SECRET   signs this site's own cookies
+  // CLIENT_ID, CLIENT_SECRET and PUBLIC_CLIENT_ID are for a server on the
+  // developer's machine only: set here, they replace the documents.
   "observability": {
     "logs": {
       "enabled": true,

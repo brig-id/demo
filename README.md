@@ -18,25 +18,54 @@ It is online at [demo.brig.id](https://demo.brig.id). It has two uses:
 | File                                   | What it holds                                                                                                                                             |
 | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [`src/oidc.ts`](src/oidc.ts)           | The whole protocol: where to send the person (`begin`), what to check when they come back (`finish`). About a hundred lines, shared by the two ways below |
-| [`src/app.ts`](src/app.ts)             | A site with a server, which keeps a secret (a _confidential client_): `/login`, `/callback`, signed cookies                                               |
-| [`src/browser.ts`](src/browser.ts)     | The same entirely in the browser, with no secret (a _public client_), at `/browser/`                                                                      |
+| [`src/client.ts`](src/client.ts)       | How the site describes itself to every server: the two documents it publishes, whose addresses are its `client_id`s                                       |
+| [`src/app.ts`](src/app.ts)             | A site with a server, which proves who it is with a key (a _confidential client_): `/login`, `/callback`, signed cookies                                  |
+| [`src/browser.ts`](src/browser.ts)     | The same entirely in the browser, with no key (a _public client_), at `/browser/`                                                                         |
 | [`test/app.test.ts`](test/app.test.ts) | What the site refuses: an answer to another request, another server's, a token signed with another key, expired, made for someone else                    |
 
 By default the site asks for `openid` and nothing more, and receives an identifier: the
 ID token's `sub` is different for each identity of a person and for each application; the
 site cannot connect two of them, and the suite checks it.
 
+**It is registered on no server.** It publishes
+[`/oauth-client-metadata.json`](https://demo.brig.id/oauth-client-metadata.json), a document
+that describes it (its name, where to send people back, what it asks for, its public key),
+and the address of that document is its `client_id`. Any brig·id server reads it there when
+someone signs in: a person whose account is on a server the site has never heard of signs in
+all the same. They type their server's domain; the site finds the rest with OpenID Connect
+discovery. It knows a person by the server and the identifier together (`iss` and `sub`),
+never by the identifier alone. The page in the browser has its own document,
+[`/browser/oauth-client-metadata.json`](https://demo.brig.id/browser/oauth-client-metadata.json),
+with no key.
+
 A visitor can make it ask for more: an e-mail address (the `email` scope), a first name, a
 username and a language (the `profile` scope). The server shows each value to the person,
 who accepts or declines them one by one. Whether an attribute is required or optional is
-not in the request: it is in the site's registration on the server. The site then shows
+not in the request: it is in the site's document (`ATTRIBUTES` in
+[`src/client.ts`](src/client.ts)). The site then shows
 what it asked for next to what came back. It cannot tell an attribute that was declined
 from one the identity does not have, and that is on purpose.
 
 ## Run it
 
-It needs a brig·id server ([`server-seedling`](https://github.com/brig-id/server-seedling))
-on which it is registered, twice:
+**Online**, the site needs two secrets on its Worker, and nothing on any server:
+
+```shell
+# CLIENT_KEY: the site's private key, a P-256 JWK. Its public half goes in the document.
+node -e 'crypto.subtle.generateKey({name:"ECDSA",namedCurve:"P-256"},true,["sign"]).then(k=>crypto.subtle.exportKey("jwk",k.privateKey)).then(j=>console.log(JSON.stringify({...j,kid:"demo-"+new Date().toISOString().slice(0,10)})))' \
+  | pnpm exec wrangler secret put CLIENT_KEY
+# SESSION_SECRET: any long random text; signs this site's own cookies.
+openssl rand -base64 48 | pnpm exec wrangler secret put SESSION_SECRET
+```
+
+A new key can replace the old one at any time: the servers read the document again within
+the hour (a sign-in signed with the new key in the meantime makes them read it at once).
+**The address of the document cannot change**: the identifier a server gives each person is
+made from it.
+
+**Against a server on this machine**, the documents cannot be used: a server reads them over
+https only. The site is then registered on the server, twice, the way an operator registers a
+site of their own:
 
 ```shell
 seedling client add --name "brig·id demo" --redirect-uri http://localhost:8788/callback \
@@ -45,14 +74,9 @@ seedling client add --name "brig·id demo (browser)" --redirect-uri http://local
   --required email --optional given_name --optional preferred_username --optional locale
 ```
 
-The `--required` and `--optional` options say what the site may ask people to share; the
-pages describe exactly these (`ASKABLE` in [`src/pages.ts`](src/pages.ts)). For a site
-already registered, `seedling client attributes <client_id>` takes the same options.
-Registered without them, the site still signs people in, and is refused when a visitor
-makes it ask for more.
-
 Each prints a `client_id`; the first also prints a `client_secret`, once. Put them in a
-`.env` file (ignored by git):
+`.env` file (ignored by git): with `CLIENT_ID` set, the site uses these instead of its
+documents.
 
 ```shell
 ISSUER=http://localhost:8080
