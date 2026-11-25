@@ -199,56 +199,189 @@ test("a server that gives an identifier only is not asked for more", async () =>
   await leave(op, "/login");
 });
 
-test("the page sets what was asked next to what came back", async () => {
-  const op = await server({
-    scopes: ["openid", "profile", "email"],
-    claims: {
-      email: "ada@example.org",
-      email_verified: false,
-      given_name: "<Ada>",
-    },
-  });
-  const { to, cookie } = await leave(op, "/login?ask=email&ask=profile");
+/** Signs in through `path` with a server that answers `claims`; returns
+ * the answer of the callback and the cookie of the session. */
+async function signIn(
+  path: string,
+  claims: Record<string, unknown> = {},
+  before = "",
+) {
+  const op = await server({ scopes: ["openid", "profile", "email"], claims });
+  const { to, cookie } = await leave(op, path);
   const back = await handle(
     get(
       `/callback?code=good-code&state=${to.searchParams.get("state")}&iss=${encodeURIComponent(ISSUER)}`,
-      cookie,
+      [cookie, before].filter(Boolean).join("; "),
     ),
     env,
     deps(op.fetch),
   );
+  return { back, session: cookieOf(back), op };
+}
+
+/** A page of the site, as the browser holding `cookie` sees it. */
+const read = async (path: string, cookie: string) =>
+  (await handle(get(path, cookie), env, deps(fetch))).text();
+
+test("the page for developers sets what was asked next to what came back", async () => {
+  const { back, session } = await signIn(
+    "/login?from=developers&ask=email&ask=profile",
+    { email: "ada@example.org", email_verified: false, given_name: "<Ada>" },
+  );
   assert.equal(back.status, 303);
-  const html = await (
-    await handle(get("/", cookieOf(back)), env, deps(op.fetch))
-  ).text();
+  assert.equal(back.headers.get("location"), "/developers/");
+  const html = await read("/developers/", session);
   const row = (label: string) =>
     new RegExp(`<th scope="row">${label}[^]*?</tr>`).exec(html)?.[0] ?? "";
-  assert.match(row("E-mail address"), /required/);
-  assert.match(row("E-mail address"), /Received:[^]*ada@example\.org/);
+  assert.match(row("Username"), /required/);
+  assert.match(row("Username"), /Not received/);
   assert.match(row("First name"), /optional/);
   // A value from the server is text, never markup.
   assert.match(row("First name"), /Received:[^]*&lt;Ada&gt;/);
-  assert.match(row("Username"), /Not received/);
-  assert.match(row("Language"), /Not received/);
-  // The choices of the next request start from these.
+  assert.match(row("E-mail address"), /optional/);
+  assert.match(row("E-mail address"), /Received:[^]*ada@example\.org/);
+  // The choices of the next request start from these, and come back here.
   assert.match(html, /name="ask" value="email" checked/);
   assert.match(html, /name="ask" value="profile" checked/);
+  assert.match(html, /name="from" value="developers"/);
 });
 
-test("asked for nothing, the page says so, and offers to ask", async () => {
-  const op = await server();
-  const { to, cookie } = await leave(op);
-  const back = await handle(
-    get(
-      `/callback?code=good-code&state=${to.searchParams.get("state")}&iss=${encodeURIComponent(ISSUER)}`,
-      cookie,
-    ),
-    env,
-    deps(op.fetch),
+test("the forum asks for a username and an e-mail address, and comes back to itself", async () => {
+  const op = await server({ scopes: ["openid", "profile", "email"] });
+  const html = await read("/", "");
+  // Its button sends what the forum always asks.
+  assert.match(html, /name="ask" value="profile"/);
+  assert.match(html, /name="ask" value="email"/);
+  assert.doesNotMatch(html, /scope|claim|token/i);
+  const { to } = await leave(op, "/login?ask=profile&ask=email");
+  assert.equal(to.searchParams.get("scope"), "openid profile email");
+  const { back } = await signIn("/login?ask=profile&ask=email");
+  assert.equal(back.headers.get("location"), "/");
+});
+
+test("the forum greets the person by their username, and says what it knows and what it does not", async () => {
+  const { session } = await signIn("/login?ask=profile&ask=email", {
+    preferred_username: "ada_l",
+  });
+  const html = await read("/", session);
+  assert.match(html, /Hello, ada_l/);
+  const fact = (name: string) =>
+    new RegExp(`<li class="fact [a-z]+">[^]*?${name}[^]*?</li>`).exec(
+      html,
+    )?.[0] ?? "";
+  assert.match(fact("Username"), /shared[^]*ada_l[^]*Shown on your posts/);
+  assert.match(fact("E-mail address"), /missing/);
+  assert.match(
+    fact("E-mail address"),
+    /You did not share an e-mail address: you will not be told of replies\./,
   );
-  const html = await (
-    await handle(get("/", cookieOf(back)), env, deps(op.fetch))
-  ).text();
+  assert.match(fact("First name"), /You did not share a first name/);
+  // The words of the forum are plain.
+  assert.doesNotMatch(html, /scope|claim|token|vsid/i);
+
+  const all = await signIn("/login?ask=profile&ask=email", {
+    preferred_username: "ada_l",
+    given_name: "Ada",
+    email: "ada@example.org",
+  });
+  const full = await read("/", all.session);
+  assert.match(full, /ada@example\.org[^]*writes to you there/);
+  assert.match(full, /<strong class="fact-value">Ada<\/strong>/);
+  assert.doesNotMatch(full, /Not shared/);
+});
+
+test("without a username, the forum can be read but not written to", async () => {
+  const { session } = await signIn("/login?ask=email", {
+    email: "ada@example.org",
+  });
+  const html = await read("/", session);
+  assert.match(html, /needs a username/);
+  assert.doesNotMatch(html, /action="\/post"/);
+  const posted = await handle(
+    new Request(`${SITE}/post`, {
+      method: "POST",
+      headers: {
+        cookie: session,
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: "text=hello",
+    }),
+    env,
+    deps(fetch),
+  );
+  assert.equal(posted.status, 303);
+  assert.equal(cookieOf(posted), "");
+});
+
+/** Posts `text` on the forum, as the browser holding `cookie`. */
+async function post(text: string, cookie: string, now = NOW) {
+  return handle(
+    new Request(`${SITE}/post`, {
+      method: "POST",
+      headers: {
+        cookie,
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({ text }).toString(),
+    }),
+    env,
+    { now: () => now },
+  );
+}
+
+test("a post is kept in the person's own cookie, shown to them only, as text", async () => {
+  const { session } = await signIn("/login?ask=profile&ask=email", {
+    preferred_username: "ada_l",
+  });
+  const posted = await post(
+    "Spare <b>rhubarb</b>, anyone?",
+    session,
+    NOW + 120,
+  );
+  assert.equal(posted.status, 303);
+  assert.equal(posted.headers.get("location"), "/");
+  const cookie = posted.headers.getSetCookie()[0]!;
+  // The session ends when it would have: a post does not make it longer.
+  assert.match(cookie, new RegExp(`Max-Age=${3600 - 120}`));
+  const html = await read("/", cookieOf(posted));
+  assert.match(html, /Spare &lt;b&gt;rhubarb&lt;\/b&gt;, anyone\?/);
+  assert.match(html, /Only you see it/);
+
+  // However many posts, the cookie stays one a browser keeps.
+  let jar = cookieOf(posted);
+  for (let i = 0; i < 6; i++) {
+    // One after the other: each post is written into the cookie of the last.
+    // oxlint-disable-next-line no-await-in-loop
+    const next = await post("的".repeat(400), jar);
+    assert.ok(next.headers.getSetCookie()[0]!.length < 4096);
+    jar = cookieOf(next);
+  }
+  assert.ok((await read("/", jar)).includes("的".repeat(280)));
+  assert.equal((await read("/", jar)).includes("的".repeat(281)), false);
+});
+
+test("signing in again with the same identity keeps its posts; another identity has none", async () => {
+  const { session } = await signIn("/login?ask=profile", {
+    preferred_username: "ada_l",
+  });
+  const posted = cookieOf(await post("Seed swap on Sunday", session));
+  const same = await signIn(
+    "/login?ask=profile",
+    { preferred_username: "ada_l" },
+    posted,
+  );
+  assert.match(await read("/", same.session), /Seed swap on Sunday/);
+  const other = await signIn(
+    "/login?ask=profile",
+    { preferred_username: "ada_w", sub: "another-identifier" },
+    posted,
+  );
+  assert.doesNotMatch(await read("/", other.session), /Seed swap on Sunday/);
+});
+
+test("asked for nothing, the page for developers says so, and offers to ask", async () => {
+  const { session } = await signIn("/login?from=developers");
+  const html = await read("/developers/", session);
   assert.match(html, /The identifier, and nothing else\./);
   assert.match(html, /name="ask" value="email">/);
   assert.doesNotMatch(html, /Not received/);
@@ -310,7 +443,11 @@ test("a good answer signs in: the page shows the identifier, and the address kee
   );
   assert.match(op.seen.verifier!, /^[A-Za-z0-9_-]{43,}$/);
 
-  const page = await handle(get("/", cookieOf(back)), env, deps(op.fetch));
+  const page = await handle(
+    get("/developers/", cookieOf(back)),
+    env,
+    deps(op.fetch),
+  );
   const html = await page.text();
   assert.match(html, /You are signed in/);
   assert.match(html, /vsid-of-this-identity-for-this-site/);
@@ -318,6 +455,8 @@ test("a good answer signs in: the page shows the identifier, and the address kee
     page.headers.get("content-security-policy")!,
     /default-src 'none'/,
   );
+  // The forum, asked for nothing, says what it misses in plain words.
+  assert.match(await read("/", cookieOf(back)), /without a username/);
 });
 
 test("an answer to another request is refused", async () => {
@@ -422,19 +561,30 @@ for (const [what, claims] of [
   });
 }
 
-test("going back without signing in is said plainly", async () => {
+test("going back without signing in is said plainly, on the page it started from", async () => {
   const op = await server();
-  const { to, cookie } = await leave(op);
-  const back = await handle(
-    get(
-      `/callback?error=access_denied&state=${to.searchParams.get("state")}&iss=${encodeURIComponent(ISSUER)}`,
-      cookie,
-    ),
-    env,
-    deps(op.fetch),
-  );
-  assert.equal(back.status, 400);
-  assert.match(await back.text(), /went back without signing in/);
+  const refuse = async (path: string) => {
+    const { to, cookie } = await leave(op, path);
+    const back = await handle(
+      get(
+        `/callback?error=access_denied&state=${to.searchParams.get("state")}&iss=${encodeURIComponent(ISSUER)}`,
+        cookie,
+      ),
+      env,
+      deps(op.fetch),
+    );
+    assert.equal(back.status, 400);
+    return back.text();
+  };
+  // From the forum: what it needs, and nothing about the protocol.
+  const forum = await refuse("/login");
+  assert.match(forum, /went back without signing in/);
+  assert.match(forum, /share a username/);
+  assert.doesNotMatch(forum, /access_denied/);
+  // From the page for developers: the code too.
+  const developers = await refuse("/login?from=developers");
+  assert.match(developers, /went back without signing in/);
+  assert.match(developers, /Code: access_denied/);
 });
 
 /** Signs in as `sub`, in a browser that already holds `session`. */
@@ -455,22 +605,32 @@ async function signInAs(sub: string, session: string): Promise<string> {
 test("two identities are two identifiers, kept side by side", async () => {
   const first = await signInAs("first-identifier", "");
   const second = await signInAs("second-identifier", first);
-  const html = await (await handle(get("/", second), env)).text();
+  const html = await (await handle(get("/developers/", second), env)).text();
   assert.match(html, /2 identifiers/);
   assert.match(html, /first-identifier/);
   assert.match(html, /second-identifier/);
 });
 
-test("forgetting clears the cookie", async () => {
+test("signing out clears the cookie, and stays on the page it was asked from", async () => {
   const response = await handle(
     new Request(`${SITE}/logout`, { method: "POST" }),
     env,
   );
   assert.equal(response.status, 303);
+  assert.equal(response.headers.get("location"), "/");
   assert.match(
     response.headers.getSetCookie()[0]!,
     /^__Host-demo=; .*Max-Age=0/,
   );
+  const developers = await handle(
+    new Request(`${SITE}/logout`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "from=developers",
+    }),
+    env,
+  );
+  assert.equal(developers.headers.get("location"), "/developers/");
 });
 
 test("a site without its key says so instead of failing", async () => {
@@ -502,7 +662,13 @@ test("the site describes itself: its public key, never the private one", async (
   assert.equal(document.jwks.keys.length, 1);
   assert.equal(document.jwks.keys[0].kid, "demo-1");
   assert.equal(document.jwks.keys[0].x, privateJwk.x);
-  assert.equal(document.brigid_attributes.email, "required");
+  assert.equal(document.client_name, "Shared Gardens");
+  // What the forum asks for, as it asks for it.
+  assert.deepEqual(document.brigid_attributes, {
+    preferred_username: "required",
+    given_name: "optional",
+    email: "optional",
+  });
 
   const page = JSON.parse(
     await (
@@ -513,6 +679,7 @@ test("the site describes itself: its public key, never the private one", async (
   assert.deepEqual(page.redirect_uris, [`${SITE}/browser/`]);
   assert.equal(page.token_endpoint_auth_method, "none");
   assert.equal(page.jwks, undefined);
+  assert.deepEqual(page.brigid_attributes, document.brigid_attributes);
 
   const missing = await handle(get("/oauth-client-metadata.json"), { ISSUER });
   assert.equal(missing.status, 503);
@@ -593,7 +760,18 @@ test("values are escaped wherever they are shown", async () => {
     env,
     deps(op.fetch),
   );
-  const html = await (await handle(get("/", cookieOf(back)), env)).text();
+  const html = await (
+    await handle(get("/developers/", cookieOf(back)), env)
+  ).text();
   assert.equal(html.includes("<img"), false);
   assert.match(html, /&lt;img src=x onerror=&quot;alert\(1\)&quot;&gt;/);
+
+  const forum = await signIn("/login?ask=profile", {
+    preferred_username: '<img src=x onerror="alert(1)">',
+    given_name: "<script>",
+  });
+  const page = await read("/", forum.session);
+  assert.equal(page.includes("<img"), false);
+  assert.equal(page.includes("<script>"), false);
+  assert.match(page, /Hello, &lt;img/);
 });

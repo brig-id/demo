@@ -13,13 +13,19 @@
  * made from them, so changing them changes everyone's identifier.
  */
 
-/** What the site asks people to share, and whether it needs each one. */
+/**
+ * What the site asks people to share, and whether it needs each one: the
+ * forum shows a username on every post, so it cannot work without one; a
+ * first name and an e-mail address (to be told of replies) are extras.
+ */
 export const ATTRIBUTES = {
-  email: "required",
+  preferred_username: "required",
   given_name: "optional",
-  preferred_username: "optional",
-  locale: "optional",
+  email: "optional",
 } as const;
+
+/** The site's name, as a server shows it to the person signing in. */
+export const NAME = "Shared Gardens";
 
 export const SERVER_DOCUMENT = "/oauth-client-metadata.json";
 export const BROWSER_DOCUMENT = "/browser/oauth-client-metadata.json";
@@ -77,7 +83,7 @@ export async function loadClientKey(
 export function serverDocument(origin: string, key: ClientKey) {
   return {
     client_id: `${origin}${SERVER_DOCUMENT}`,
-    client_name: "brig·id demo",
+    client_name: NAME,
     client_uri: origin,
     logo_uri: `${origin}/favicon.svg`,
     application_type: "web",
@@ -95,7 +101,7 @@ export function serverDocument(origin: string, key: ClientKey) {
 export function browserDocument(origin: string) {
   return {
     client_id: `${origin}${BROWSER_DOCUMENT}`,
-    client_name: "brig·id demo (in the browser)",
+    client_name: `${NAME} (in the browser)`,
     client_uri: `${origin}/browser/`,
     logo_uri: `${origin}/favicon.svg`,
     application_type: "web",
