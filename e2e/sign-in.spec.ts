@@ -74,7 +74,14 @@ async function chooseIdentity(page: Page, identity: string) {
     page.getByRole("heading", { name: /Continue to Shared Gardens/ }),
   ).toBeVisible();
   await page.getByRole("radio", { name: identity }).check();
-  await page.getByRole("button", { name: "Continue", exact: true }).click();
+  // Refused for going too fast ("Too many attempts"), the server's page says
+  // so and stays: a person would press again.
+  await expect(async () => {
+    await page
+      .getByRole("button", { name: "Continue", exact: true })
+      .click({ timeout: 2000 });
+    await expect(page).toHaveURL(new RegExp(`^${DEMO}/`), { timeout: 3000 });
+  }).toPass({ timeout: 40_000 });
 }
 
 const identifier = (page: Page) => page.locator(".claims .main td > .mono");
