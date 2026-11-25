@@ -24,6 +24,8 @@ function seedling(...args: string[]): string {
     ],
     {
       encoding: "utf8",
+      // What the command says on error is read below, not printed.
+      stdio: ["ignore", "pipe", "pipe"],
       env: {
         ...process.env,
         BRIGID_MASTER_KEY: MASTER_KEY,
@@ -31,6 +33,25 @@ function seedling(...args: string[]): string {
       },
     },
   );
+}
+
+/**
+ * The suite creates many accounts from one address (127.0.0.1), more than a
+ * server allows a day by default. A server too old to have the setting has
+ * no such limit: its command is unknown, and nothing is changed.
+ */
+function allowManySignUps() {
+  try {
+    seedling("limits", "set", "sign_ups_per_ip_per_day", "1000");
+  } catch (err) {
+    const stderr = String((err as { stderr?: unknown }).stderr ?? "");
+    if (!/unrecognized subcommand 'limits'/.test(stderr)) {
+      throw new Error(`seedling limits set failed: ${stderr}`, { cause: err });
+    }
+    console.log(
+      "The server has no `limits` command: sign-ups are not limited per address.",
+    );
+  }
 }
 
 function register(...args: string[]): Record<string, string> {
@@ -57,6 +78,7 @@ const MAY_ASK = [
 
 export default async function setup() {
   seedling("signup", "open");
+  allowManySignUps();
   const site = register(
     "--name",
     "Shared Gardens",
