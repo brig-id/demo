@@ -71,7 +71,7 @@ async function createAccount(page: Page) {
 async function chooseIdentity(page: Page, identity: string) {
   await expect(page).toHaveURL(new RegExp(`^${SERVER}/continue/`));
   await expect(
-    page.getByRole("heading", { name: /Continue to brig·id demo/ }),
+    page.getByRole("heading", { name: /Continue to Shared Gardens/ }),
   ).toBeVisible();
   await page.getByRole("radio", { name: identity }).check();
   await page.getByRole("button", { name: "Continue", exact: true }).click();
@@ -86,15 +86,18 @@ test("the site meets an identity: one identifier per identity, stable, and nothi
   await virtualAuthenticator(context, page);
   await createAccount(page);
 
-  // -- signed in on the server, sent there by the site -------------------------
+  // -- signed in on the server, sent there by the page for developers ----------
+  // It asks for the identifier alone: nothing is ticked.
   await page.goto("/");
+  await page.getByRole("link", { name: "For developers" }).click();
+  await expect(page).toHaveURL(`${DEMO}/developers/`);
   await page.getByRole("button", { name: "Sign in with brig·id" }).click();
   // Several identities, none remembered for this site: nothing is chosen
   // for the person.
   await expect(page.getByRole("radio", { checked: true })).toHaveCount(0);
   await chooseIdentity(page, "Personal");
 
-  await expect(page).toHaveURL(`${DEMO}/`);
+  await expect(page).toHaveURL(`${DEMO}/developers/`);
   await expect(
     page.getByRole("heading", { name: "You are signed in" }),
   ).toBeVisible();
@@ -181,7 +184,7 @@ test("someone not signed in on the server uses their passkey there, then comes b
   await page.getByRole("button", { name: "Sign out" }).click();
   await expect(page).toHaveURL(`${SERVER}/`);
 
-  await page.goto("/");
+  await page.goto("/developers/");
   await page.getByRole("button", { name: "Sign in with brig·id" }).click();
   await expect(page.getByText("Sign in to choose the identity")).toBeVisible();
   await expect(async () => {
@@ -199,8 +202,13 @@ test("someone not signed in on the server uses their passkey there, then comes b
 
   // Forgetting is this site's own business: the server is not asked.
   await page.getByRole("button", { name: "Forget me" }).click();
+  await expect(page).toHaveURL(`${DEMO}/developers/`);
   await expect(
     page.getByRole("button", { name: "Sign in with brig·id" }),
+  ).toBeVisible();
+  await page.goto("/");
+  await expect(
+    page.getByRole("heading", { name: /Seeds, tips and tools/ }),
   ).toBeVisible();
 
   // An answer replayed in another browser is worth nothing there.
@@ -211,20 +219,23 @@ test("someone not signed in on the server uses their passkey there, then comes b
   await other.close();
 });
 
-test("the site asks for attributes: the person decides, and the site sees what came back", async ({
+test("the forum asks for a username and an e-mail address: the person decides, and the forum says what it learned", async ({
   page,
   context,
 }) => {
   await virtualAuthenticator(context, page);
   await createAccount(page);
 
-  const asked = page.getByRole("group", { name: "brig·id demo asks for" });
+  const asked = page.getByRole("group", { name: "Shared Gardens asks for" });
   const next = page.getByRole("button", { name: "Continue", exact: true });
+  const username = asked.getByRole("checkbox", { name: /Username/ });
   const email = asked.getByRole("checkbox", { name: /E-mail address/ });
   const firstName = asked.getByRole("checkbox", { name: /First name/ });
-  /** The line of the site's table about one attribute. */
-  const came = (label: string) =>
-    page.locator(".asked tr").filter({ hasText: label });
+  /** One line of what the forum says it knows. */
+  const knows = (name: string) =>
+    page.locator(".fact").filter({
+      has: page.locator(".fact-name", { hasText: name }),
+    });
   const again = page.getByRole("button", {
     name: "Sign in with another identity",
   });
@@ -250,63 +261,68 @@ test("the site asks for attributes: the person decides, and the site sees what c
       ).toBeVisible({ timeout: 3000 });
     }).toPass({ timeout: 40_000 });
 
-  // -- the visitor chooses what the site asks for --------------------------------
+  // -- the forum, as anyone finds it ------------------------------------------------
   await page.goto("/");
-  await page.getByLabel(/An e-mail address/).check();
-  await page.getByLabel(/A first name, a username, a language/).check();
+  await expect(page.getByText("A username", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Sign in with brig·id" }).click();
 
-  // The server's page lists it, marked as the site is registered. The
-  // identity has none of it yet: the required address stops everything.
+  // The server's page lists what the forum asks, marked as its document says.
+  // The identity has none of it yet: the required username stops everything.
   await expect(page).toHaveURL(new RegExp(`^${SERVER}/continue/`));
   await page.getByRole("radio", { name: "Work" }).check();
-  await expect(asked.locator(".asked-row")).toHaveCount(4);
+  await expect(asked.locator(".asked-row")).toHaveCount(3);
   await expect(asked.getByText("Required", { exact: true })).toHaveCount(1);
   await expect(next).toBeDisabled();
+  await addToIdentity("Username", "ada_l");
+  await expect(username).not.toBeChecked();
   await addToIdentity("E-mail address", "ada@work.example");
-  await expect(email).not.toBeChecked();
   await addToIdentity("First name", "Ada");
-  await expect(firstName).not.toBeChecked();
 
   // -- everything accepted ---------------------------------------------------------
+  await username.check();
   await email.check();
   await firstName.check();
   await proceed();
   await expect(page).toHaveURL(`${DEMO}/`);
-  await expect(came("E-mail address")).toContainText("Received");
+  await expect(
+    page.getByRole("heading", { name: "Hello, ada_l" }),
+  ).toBeVisible();
+  await expect(knows("Username")).toContainText("ada_l");
+  await expect(knows("First name")).toContainText("Ada");
+  await expect(knows("E-mail address")).toContainText("ada@work.example");
+  await expect(knows("E-mail address")).toContainText(
+    "writes to you there when someone replies",
+  );
+
+  // A post, shown with the username.
+  await page.getByLabel("Your post").fill("Spare rhubarb by plot 3, anyone?");
+  await page.getByRole("button", { name: "Post as ada_l" }).click();
+  const mine = page.locator(".post.own");
+  await expect(mine).toContainText("Spare rhubarb by plot 3, anyone?");
+  await expect(mine).toContainText("ada_l");
+
+  // The page for developers shows the same sign-in, in its own words.
+  await page.goto("/developers/");
+  const came = (label: string) =>
+    page.locator(".asked tr").filter({ hasText: label });
+  await expect(came("Username")).toContainText("ada_l");
   await expect(came("E-mail address")).toContainText("ada@work.example");
-  await expect(came("First name")).toContainText("Ada");
-  // On no identity, so never offered: the site cannot tell why it is missing.
-  await expect(came("Username")).toContainText("Not received");
-  await expect(came("Language")).toContainText("Not received");
   await Promise.all(
-    ["email", "email_verified", "given_name"].map((claim) =>
-      expect(
-        page
-          .locator(".claims th")
-          .filter({ hasText: new RegExp(`^${claim}$`) }),
-      ).toHaveCount(1),
+    ["preferred_username", "email", "email_verified", "given_name"].map(
+      (claim) =>
+        expect(
+          page
+            .locator(".claims th")
+            .filter({ hasText: new RegExp(`^${claim}$`) }),
+        ).toHaveCount(1),
     ),
   );
   const withEverything = (await identifier(page).textContent())!;
 
-  // -- an optional attribute refused: signed in all the same -----------------------
-  await again.click();
-  await expect(page.getByRole("radio", { name: "Work" })).toBeChecked();
-  // What was accepted is remembered, with its values.
-  await expect(email).toBeChecked();
-  await expect(firstName).toBeChecked();
-  await firstName.uncheck();
-  await proceed();
-  await expect(page).toHaveURL(`${DEMO}/`);
-  await expect(came("E-mail address")).toContainText("ada@work.example");
-  await expect(came("First name")).toContainText("Not received");
-  // The same identity, whatever it shares: the same identifier.
-  await expect(identifier(page)).toHaveText(withEverything);
-
   // -- the required attribute refused: no sign-in ------------------------------------
+  await page.goto("/");
   await again.click();
-  await email.uncheck();
+  await username.uncheck();
   await expect(next).toBeDisabled();
   // Refused for going too fast, the server's page says so and stays.
   await expect(async () => {
@@ -315,8 +331,14 @@ test("the site asks for attributes: the person decides, and the site sees what c
       .click({ timeout: 2000 });
     await expect(page).toHaveURL(new RegExp(`^${DEMO}/`), { timeout: 3000 });
   }).toPass({ timeout: 40_000 });
+  await expect(
+    page.getByRole("heading", { name: "You are not signed in" }),
+  ).toBeVisible();
   await expect(page.getByRole("alert")).toContainText(
     "went back without signing in",
+  );
+  await expect(page.locator("main")).toContainText(
+    "To post, sign in and share a username",
   );
 
   // -- a value changes on the identity: the server asks again ------------------------
@@ -335,38 +357,57 @@ test("the site asks for attributes: the person decides, and the site sees what c
     });
   }).toPass({ timeout: 40_000 });
 
-  // The site starts from what it asked last; this time, the address only.
   await page.goto("/");
-  await expect(page.getByLabel(/An e-mail address/)).toBeChecked();
-  await page.getByLabel(/A first name, a username, a language/).uncheck();
-  await page.getByRole("button", { name: /^Sign in with/ }).click();
+  await again.click();
   await expect(asked.getByText("ada@new.example")).toBeVisible();
-  // The acceptance was for the old address: nothing is ticked.
+  // The acceptance was for the old address: it is not ticked. The username
+  // did not change, and stays accepted.
   await expect(email).not.toBeChecked();
-  await expect(next).toBeDisabled();
+  await expect(username).toBeChecked();
   await email.check();
   await proceed();
-  await expect(came("E-mail address")).toContainText("ada@new.example");
-  // Not asked this time: not in the table, and not received.
-  await expect(came("First name")).toHaveCount(0);
-  await expect(page.locator(".claims")).not.toContainText("Ada");
+  await expect(knows("E-mail address")).toContainText("ada@new.example");
+
+  // -- an optional attribute refused: signed in all the same -----------------------
+  await page.goto("/");
+  await again.click();
+  await expect(page.getByRole("radio", { name: "Work" })).toBeChecked();
+  // What was accepted is remembered, with its values.
+  await expect(username).toBeChecked();
+  await expect(email).toBeChecked();
+  await email.uncheck();
+  await proceed();
+  await expect(page).toHaveURL(`${DEMO}/`);
+  await expect(
+    page.getByRole("heading", { name: "Hello, ada_l" }),
+  ).toBeVisible();
+  await expect(knows("E-mail address")).toContainText(
+    "You did not share an e-mail address: you will not be told of replies.",
+  );
+  await expect(page.getByText("ada@new.example")).toHaveCount(0);
+  // The same identity keeps its post, and is the same person to the site.
+  await expect(mine).toContainText("Spare rhubarb");
+  await page.goto("/developers/");
+  await expect(identifier(page)).toHaveText(withEverything);
 
   // -- the page in the browser is another application: it starts from nothing --------
   await page.goto("/browser/");
+  await page.getByLabel(/A username and a first name/).check();
   await page.getByLabel(/An e-mail address/).check();
   await page.getByRole("button", { name: "Sign in with brig·id" }).click();
   await page.getByRole("radio", { name: "Work" }).check();
+  const inBrowser = page.getByRole("group", {
+    name: "Shared Gardens (in the browser) asks for",
+  });
   await expect(
-    page
-      .getByRole("group", { name: "brig·id demo (browser) asks for" })
-      .getByRole("checkbox", { name: /E-mail address/ }),
+    inBrowser.getByRole("checkbox", { name: /Username/ }),
   ).not.toBeChecked();
-  await page
-    .getByRole("group", { name: "brig·id demo (browser) asks for" })
-    .getByRole("checkbox", { name: /E-mail address/ })
-    .check();
+  await inBrowser.getByRole("checkbox", { name: /Username/ }).check();
+  await inBrowser.getByRole("checkbox", { name: /E-mail address/ }).check();
   await proceed();
   await expect(page).toHaveURL(`${DEMO}/browser/`);
+  await expect(came("Username")).toContainText("ada_l");
   await expect(came("E-mail address")).toContainText("ada@new.example");
+  await expect(came("First name")).toContainText("Not received");
   await expect(page.getByLabel(/An e-mail address/)).toBeChecked();
 });

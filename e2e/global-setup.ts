@@ -44,31 +44,29 @@ function register(...args: string[]): Record<string, string> {
   );
 }
 
-/** What both registrations may ask for: the same as on the public server
- * (`README.md`), and what `ASKABLE` in `src/pages.ts` says. */
+/** What both registrations may ask for: the same as the site's document
+ * (`ATTRIBUTES` in `src/client.ts`) and the commands of `README.md`. */
 const MAY_ASK = [
   "--required",
-  "email",
+  "preferred_username",
   "--optional",
   "given_name",
   "--optional",
-  "preferred_username",
-  "--optional",
-  "locale",
+  "email",
 ];
 
 export default async function setup() {
   seedling("signup", "open");
   const site = register(
     "--name",
-    "brig·id demo",
+    "Shared Gardens",
     "--redirect-uri",
     `${DEMO}/callback`,
     ...MAY_ASK,
   );
   const page = register(
     "--name",
-    "brig·id demo (browser)",
+    "Shared Gardens (in the browser)",
     "--redirect-uri",
     `${DEMO}/browser/`,
     "--public",
