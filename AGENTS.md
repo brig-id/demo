@@ -18,6 +18,10 @@ pull requests, and the pages of the site.
 - **It stays small enough to read in one sitting.** No framework: a request
   handler over the Fetch API (`src/app.ts`), pages as text (`src/pages.ts`).
   Every value shown goes through `esc`.
+- **The forum speaks to anyone.** `/` is an ordinary website (Shared Gardens):
+  no protocol words there (claims, scopes, tokens). Everything technical is on
+  the pages for developers (`/developers/`, `/browser/`), linked from the
+  footer.
 - **It keeps nothing about anyone.** No database, no log of sign-ins. State
   lives in signed cookies in the person's browser.
 - **A secret never reaches the browser.** `/browser/` uses the public
