@@ -1,8 +1,16 @@
 # brig·id — demo
 
-A small website that signs in with a [brig·id](https://brig.id) server, and shows exactly
-what it receives: an identifier made for it and for the identity the person chose, and
-nothing else.
+A small website that signs in with a [brig·id](https://brig.id) server: **Shared Gardens**, a
+made-up forum of community gardeners. A visitor signs in to post; the forum asks for a
+username (required: it is shown on posts), an e-mail address (optional: to be told of
+replies) and a first name (optional). Once signed in, it greets them and says in plain words
+what it learned, and what it did not get. That is all it knows: an identifier made for it and
+for the identity the person chose, and what they accepted to share.
+
+Behind a discreet link in the footer, [`/developers/`](https://demo.brig.id/developers/) shows
+the same sign-in with its workings visible: the server to use, what to ask for, what was
+asked next to what came back, every claim of the ID token, and the same entirely in the
+browser at [`/browser/`](https://demo.brig.id/browser/).
 
 It is online at [demo.brig.id](https://demo.brig.id). It has two uses:
 
@@ -19,13 +27,15 @@ It is online at [demo.brig.id](https://demo.brig.id). It has two uses:
 | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [`src/oidc.ts`](src/oidc.ts)           | The whole protocol: where to send the person (`begin`), what to check when they come back (`finish`). About a hundred lines, shared by the two ways below |
 | [`src/client.ts`](src/client.ts)       | How the site describes itself to every server: the two documents it publishes, whose addresses are its `client_id`s                                       |
-| [`src/app.ts`](src/app.ts)             | A site with a server, which proves who it is with a key (a _confidential client_): `/login`, `/callback`, signed cookies                                  |
+| [`src/app.ts`](src/app.ts)             | A site with a server, which proves who it is with a key (a _confidential client_): `/login`, `/callback`, signed cookies, the forum's posts               |
+| [`src/pages.ts`](src/pages.ts)         | The pages: the forum (`/`), in plain words, and the pages for developers (`/developers/`, `/browser/`)                                                    |
 | [`src/browser.ts`](src/browser.ts)     | The same entirely in the browser, with no key (a _public client_), at `/browser/`                                                                         |
 | [`test/app.test.ts`](test/app.test.ts) | What the site refuses: an answer to another request, another server's, a token signed with another key, expired, made for someone else                    |
 
-By default the site asks for `openid` and nothing more, and receives an identifier: the
-ID token's `sub` is different for each identity of a person and for each application; the
-site cannot connect two of them, and the suite checks it.
+The forum asks for `openid profile email`. The page for developers asks for `openid` and
+nothing more unless the visitor ticks a scope, and then receives an identifier: the ID
+token's `sub` is different for each identity of a person and for each application; the site
+cannot connect two of them, and the suite checks it.
 
 **It is registered on no server.** It publishes
 [`/oauth-client-metadata.json`](https://demo.brig.id/oauth-client-metadata.json), a document
@@ -38,13 +48,16 @@ never by the identifier alone. The page in the browser has its own document,
 [`/browser/oauth-client-metadata.json`](https://demo.brig.id/browser/oauth-client-metadata.json),
 with no key.
 
-A visitor can make it ask for more: an e-mail address (the `email` scope), a first name, a
-username and a language (the `profile` scope). The server shows each value to the person,
-who accepts or declines them one by one. Whether an attribute is required or optional is
-not in the request: it is in the site's document (`ATTRIBUTES` in
-[`src/client.ts`](src/client.ts)). The site then shows
-what it asked for next to what came back. It cannot tell an attribute that was declined
-from one the identity does not have, and that is on purpose.
+The server shows each value asked for to the person, who accepts or declines them one by
+one. Whether an attribute is required or optional is not in the request: it is in the
+site's document (`ATTRIBUTES` in [`src/client.ts`](src/client.ts)): the username
+(`preferred_username`) is required, the first name (`given_name`) and the e-mail address
+(`email`) are optional. Declining the username ends the sign-in; the forum then says it
+needs one to show on posts. The site cannot tell an attribute that was declined from one the
+identity does not have, and that is on purpose: the forum says "you did not share it".
+
+A post written on the forum is kept in the person's own session cookie, for them only, and
+goes with it.
 
 ## Run it
 
@@ -68,10 +81,10 @@ https only. The site is then registered on the server, twice, the way an operato
 site of their own:
 
 ```shell
-seedling client add --name "brig·id demo" --redirect-uri http://localhost:8788/callback \
-  --required email --optional given_name --optional preferred_username --optional locale
-seedling client add --name "brig·id demo (browser)" --redirect-uri http://localhost:8788/browser/ --public \
-  --required email --optional given_name --optional preferred_username --optional locale
+seedling client add --name "Shared Gardens" --redirect-uri http://localhost:8788/callback \
+  --required preferred_username --optional given_name --optional email
+seedling client add --name "Shared Gardens (in the browser)" --redirect-uri http://localhost:8788/browser/ --public \
+  --required preferred_username --optional given_name --optional email
 ```
 
 Each prints a `client_id`; the first also prints a `client_secret`, once. Put them in a
@@ -122,8 +135,9 @@ pnpm exec wrangler secret put SESSION_SECRET
 
 Until they are set, the site says that it is not connected to a server yet.
 
-The site keeps no database and no log of who signs in. What it shows after a sign-in
-comes from a signed cookie in the person's own browser, which expires after an hour.
+The site keeps no database and no log of who signs in. What it shows after a sign-in,
+posts included, comes from a signed cookie in the person's own browser, which expires after
+an hour.
 
 ## Licence
 
