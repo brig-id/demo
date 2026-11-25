@@ -46,7 +46,16 @@ export function serve(
       for (const [name, value] of Object.entries(req.headers)) {
         if (typeof value === "string") headers.set(name, value);
       }
-      const request = new Request(url, { method: req.method, headers });
+      // A form sent to the site (a post, signing out) has a body.
+      const chunks: Buffer[] = [];
+      if (req.method !== "GET" && req.method !== "HEAD") {
+        for await (const chunk of req) chunks.push(chunk as Buffer);
+      }
+      const request = new Request(url, {
+        method: req.method,
+        headers,
+        ...(chunks.length > 0 ? { body: Buffer.concat(chunks) } : {}),
+      });
       const response =
         (await file(url.pathname)) ?? (await handle(request, env));
       res.statusCode = response.status;

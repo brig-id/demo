@@ -3,8 +3,11 @@
  * code runs on Cloudflare Workers (`worker.ts`) and on Node (`node.ts`).
  *
  * It keeps no database. Between the moment a person leaves for the brig·id
- * server and their return, and afterwards to show what was received, it
- * writes signed cookies in their browser.
+ * server and their return, and afterwards to show what was received (and the
+ * posts they wrote on the forum), it writes signed cookies in their browser.
+ *
+ * `/` is the forum, for anyone; `/developers/` and `/browser/` show the same
+ * sign-in with its workings visible.
  */
 import {
   BROWSER_DOCUMENT,
@@ -24,6 +27,7 @@ import {
   type Transaction,
 } from "./oidc.ts";
 import * as pages from "./pages.ts";
+import type { From, Post } from "./pages.ts";
 import { seal, unseal } from "./seal.ts";
 
 export interface Env {
@@ -56,11 +60,21 @@ interface Session {
   seen: string[];
   /** What the last request asked for, beyond the identifier. */
   asked?: Scope[];
+  /** What the person wrote on the forum, newest first. */
+  posts?: Post[];
+  /** When the session ends (Unix seconds): writing a post does not move it. */
+  until?: number;
 }
+
+/** A request on its way, and the page it started from. */
+type Pending = Transaction & { from?: From };
 
 const TRANSACTION_SECONDS = 10 * 60;
 const SESSION_SECONDS = 60 * 60;
 const SEEN_AT_MOST = 6;
+const POSTS_AT_MOST = 3;
+/** Browsers refuse a cookie much over 4 kB: the oldest posts go first. */
+const COOKIE_AT_MOST = 3800;
 
 function cookies(request: Request): Map<string, string> {
   const jar = new Map<string, string>();
@@ -135,6 +149,38 @@ function redirect(to: string, status: 302 | 303, headers = new Headers()) {
   return new Response(null, { status, headers });
 }
 
+/** The session cookie, with as many posts as fit in it. */
+async function sessionCookie(
+  name: string,
+  attributes: string,
+  session: Session,
+  secret: string,
+  now: number,
+): Promise<string> {
+  const until = session.until ?? now + SESSION_SECONDS;
+  const posts = session.posts ?? [];
+  const value = await seal({ ...session, posts, until }, secret, until);
+  const cookie = `${name}=${value}; ${attributes}; Max-Age=${until - now}`;
+  return cookie.length <= COOKIE_AT_MOST || posts.length === 0
+    ? cookie
+    : sessionCookie(
+        name,
+        attributes,
+        { ...session, posts: posts.slice(0, -1), until },
+        secret,
+        now,
+      );
+}
+
+/** The fields of a form sent to this site; empty when there is none. */
+async function form(request: Request): Promise<URLSearchParams> {
+  try {
+    return new URLSearchParams(await request.text());
+  } catch {
+    return new URLSearchParams();
+  }
+}
+
 export async function handle(
   request: Request,
   env: Env,
@@ -153,10 +199,51 @@ export async function handle(
   const secret = env.SESSION_SECRET ?? "";
   const expire = (name: string) => `${name}=; ${names.attributes}; Max-Age=0`;
 
-  if (request.method === "POST" && url.pathname === "/logout") {
-    const headers = new Headers();
-    headers.append("set-cookie", expire(names.session));
-    return redirect("/", 303, headers);
+  if (request.method === "POST") {
+    // The cookies are `SameSite=Lax`: a form sent from another site comes
+    // without them, and can neither post nor sign anyone out.
+    const fields = await form(request);
+    if (url.pathname === "/logout") {
+      const headers = new Headers();
+      headers.append("set-cookie", expire(names.session));
+      const back = fields.get("from") === "developers" ? "/developers/" : "/";
+      return redirect(back, 303, headers);
+    }
+    if (url.pathname === "/post") {
+      const session = await unseal<Session>(
+        jar.get(names.session),
+        secret,
+        now,
+      );
+      const text = (fields.get("text") ?? "").trim();
+      // Only someone with a username can post: it is shown on the post.
+      if (
+        !session ||
+        typeof session.claims.preferred_username !== "string" ||
+        !text
+      ) {
+        return redirect("/", 303);
+      }
+      const post: Post = {
+        text: [...text].slice(0, pages.POST_MAX).join(""),
+        at: now,
+      };
+      const headers = new Headers();
+      headers.append(
+        "set-cookie",
+        await sessionCookie(
+          names.session,
+          names.attributes,
+          {
+            ...session,
+            posts: [post, ...(session.posts ?? [])].slice(0, POSTS_AT_MOST),
+          },
+          secret,
+          now,
+        ),
+      );
+      return redirect("/", 303, headers);
+    }
   }
   if (request.method !== "GET" && request.method !== "HEAD") {
     return new Response("Method not allowed", {
@@ -183,26 +270,49 @@ export async function handle(
       );
       return html(
         session
-          ? pages.signedIn(
+          ? pages.signedIn(session.claims, session.posts ?? [], now)
+          : pages.home(),
+        issuer,
+      );
+    }
+
+    case "/developers/": {
+      const session = await unseal<Session>(
+        jar.get(names.session),
+        secret,
+        now,
+      );
+      return html(
+        session
+          ? pages.developersSignedIn(
               new URL(session.claims.iss).host,
               session.claims,
               session.seen,
               session.asked ?? [],
             )
-          : pages.home(server),
+          : pages.developersHome(server),
         issuer,
       );
     }
 
+    case "/developers":
+      return redirect("/developers/", 302);
+
     case "/login": {
+      const from: From =
+        url.searchParams.get("from") === "developers" ? "developers" : "forum";
+      const failed = (message: string, status: string, code: string | null) =>
+        from === "developers"
+          ? pages.developersFailed(server, message, status)
+          : pages.forumFailed(message, code);
       const key = await loadClientKey(env.CLIENT_KEY);
       const proof = env.CLIENT_ID ? env.CLIENT_SECRET : key;
       if (!proof || !secret) {
         return html(
-          pages.failed(
-            server,
+          failed(
             "This demonstration is not set up yet.",
             "The site is online; its key or its cookie secret is missing.",
+            null,
           ),
           issuer,
           503,
@@ -213,12 +323,12 @@ export async function handle(
       const chosen = named ? issuerFrom(named) : issuer;
       if (!chosen) {
         return html(
-          pages.failed(
-            server,
+          failed(
             named
               ? `“${named}” is not the address of a server.`
               : "This demonstration offers no server.",
             "A server is named by its domain, like helm.brig.id.",
+            null,
           ),
           issuer,
           400,
@@ -243,15 +353,15 @@ export async function handle(
         const headers = new Headers();
         headers.append(
           "set-cookie",
-          `${names.transaction}=${await seal(transaction, secret, now + TRANSACTION_SECONDS)}; ${names.attributes}; Max-Age=${TRANSACTION_SECONDS}`,
+          `${names.transaction}=${await seal({ ...transaction, from } satisfies Pending, secret, now + TRANSACTION_SECONDS)}; ${names.attributes}; Max-Age=${TRANSACTION_SECONDS}`,
         );
         return redirect(to.href, 302, headers);
       } catch (err) {
         return html(
-          pages.failed(
-            server,
+          failed(
             err instanceof Error ? err.message : "Unexpected error.",
             "",
+            err instanceof SignInError ? err.code : null,
           ),
           issuer,
           502,
@@ -263,19 +373,23 @@ export async function handle(
       const headers = new Headers();
       // One answer per request: the transaction is spent whatever happens.
       headers.append("set-cookie", expire(names.transaction));
-      const transaction = await unseal<Transaction>(
+      const transaction = await unseal<Pending>(
         jar.get(names.transaction),
         secret,
         now,
       );
+      const failed = (message: string, status: string, code: string | null) =>
+        transaction?.from === "developers"
+          ? pages.developersFailed(server, message, status)
+          : pages.forumFailed(message, code);
       const key = await loadClientKey(env.CLIENT_KEY);
       const proof = env.CLIENT_ID ? env.CLIENT_SECRET : key;
       if (!proof || !transaction) {
         return html(
-          pages.failed(
-            server,
+          failed(
             "This answer matches no request made from this browser.",
             "The request may have expired (ten minutes), or the page was opened twice.",
+            null,
           ),
           issuer,
           400,
@@ -306,19 +420,36 @@ export async function handle(
           ...(before?.seen ?? []).filter((sub) => sub !== claims.sub),
           claims.sub,
         ].slice(-SEEN_AT_MOST);
+        // The posts stay with the identity that wrote them.
+        const same =
+          before?.claims.iss === claims.iss && before.claims.sub === claims.sub;
         headers.append(
           "set-cookie",
-          `${names.session}=${await seal({ claims, seen, asked: transaction.scopes ?? [] } satisfies Session, secret, now + SESSION_SECONDS)}; ${names.attributes}; Max-Age=${SESSION_SECONDS}`,
+          await sessionCookie(
+            names.session,
+            names.attributes,
+            {
+              claims,
+              seen,
+              asked: transaction.scopes ?? [],
+              ...(same && before.posts ? { posts: before.posts } : {}),
+            },
+            secret,
+            now,
+          ),
         );
         // The address with the code is left at once.
-        return redirect("/", 303, headers);
+        return redirect(
+          transaction.from === "developers" ? "/developers/" : "/",
+          303,
+          headers,
+        );
       } catch (err) {
-        const code =
-          err instanceof SignInError && err.code ? `Code: ${err.code}` : "";
+        const code = err instanceof SignInError ? err.code : null;
         return html(
-          pages.failed(
-            server,
+          failed(
             err instanceof Error ? err.message : "Unexpected error.",
+            code ? `Code: ${code}` : "",
             code,
           ),
           issuer,
@@ -347,6 +478,6 @@ export async function handle(
       });
 
     default:
-      return html(pages.notFound(server), issuer, 404);
+      return html(pages.notFound(), issuer, 404);
   }
 }
