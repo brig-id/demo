@@ -350,10 +350,9 @@ test("the forum asks for a username and an e-mail address: the person decides, a
 
   // -- a value changes on the identity: the server asks again ------------------------
   await page.goto(`${SERVER}/identities/`);
-  await page
-    .getByRole("link", { name: "What it shares, and with whom (Work)" })
-    .click();
-  await page.getByRole("button", { name: "Edit What it can share" }).click();
+  await page.getByRole("link", { name: "Open (Work)" }).click();
+  await page.getByRole("tab", { name: "My information" }).click();
+  await page.getByRole("button", { name: "Edit My information" }).click();
   await page.getByLabel("E-mail address").fill("ada@new.example");
   await expect(async () => {
     await page
